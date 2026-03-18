@@ -1,0 +1,5 @@
+{
+  "name": "TubeFlow",
+  "description": "A simple and fast YouTube video and audio downloader.",
+  "requestFramePermissions": []
+}
