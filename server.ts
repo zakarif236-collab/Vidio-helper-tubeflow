@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT || 3000);
 
   // API Route for YouTube Download
   app.get("/api/download", async (req, res) => {
@@ -69,8 +69,21 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+  });
+
+  server.on('error', (error) => {
+    if ((error as any).code === 'EADDRINUSE') {
+      const fallbackPort = PORT + 1;
+      console.warn(`Port ${PORT} is in use. Trying fallback port ${fallbackPort}...`);
+      app.listen(fallbackPort, "0.0.0.0", () => {
+        console.log(`Server running on http://localhost:${fallbackPort}`);
+      });
+    } else {
+      console.error('Server error:', error);
+      process.exit(1);
+    }
   });
 }
 
