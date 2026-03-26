@@ -48,6 +48,7 @@ import {
   Droplets,
   Focus
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Stage, Layer, Rect, Circle as KonvaCircle, Star as KonvaStar, Text as KonvaText, Image as KonvaImage, Transformer } from 'react-konva';
 import useImage from 'use-image';
@@ -112,9 +113,22 @@ const Navbar = ({ onShowHistory }: { onShowHistory: () => void }) => (
       </button>
       <a href="#pricing" className="hover:text-white transition-colors">Pricing</a>
     </div>
-    <button className="px-4 py-2 bg-white text-black text-sm font-bold rounded-full hover:bg-zinc-200 transition-colors">
-      Get Started
-    </button>
+    <div className="flex items-center gap-2">
+      <Link
+        to="/login"
+        className="inline-flex items-center gap-1 px-4 py-2 border border-slate-700 rounded-full text-sm font-semibold text-white hover:bg-slate-800 transition-colors"
+      >
+        <Play className="w-4 h-4" />
+        Login
+      </Link>
+      <Link
+        to="/signup"
+        className="inline-flex items-center gap-1 px-4 py-2 bg-blue-600 rounded-full text-sm font-semibold text-white hover:bg-blue-500 transition-colors"
+      >
+        <Plus className="w-4 h-4" />
+        Sign Up
+      </Link>
+    </div>
   </nav>
 );
 
