@@ -5,6 +5,8 @@ import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
 import SignUpPage from './pages/SignUpPage';
 import StudioPage from './pages/StudioPage';
+import SettingsPage from './pages/SettingsPage';
+import CreatorLabPage from './pages/CreatorLabPage';
 import './index.css';
 
 createRoot(document.getElementById('root')!).render(
@@ -15,6 +17,8 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignUpPage />} />
         <Route path="/studio" element={<StudioPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/creator-lab" element={<CreatorLabPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
