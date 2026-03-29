@@ -115,6 +115,21 @@ const Navbar = ({ onShowHistory }: { onShowHistory: () => void }) => (
     </div>
     <div className="flex items-center gap-2">
       <Link
+        to="/creator-lab"
+        className="inline-flex items-center gap-1 px-4 py-2 bg-emerald-500/20 border border-emerald-500/50 rounded-lg text-emerald-400 hover:bg-emerald-500/30 transition-colors text-sm font-semibold"
+        title="Creator Lab - Advanced Thumbnail Designer"
+      >
+        <Sparkles className="w-4 h-4" />
+        Creator Lab
+      </Link>
+      <Link
+        to="/settings"
+        className="inline-flex items-center gap-1 px-4 py-2 text-slate-300 hover:text-white transition-colors"
+        title="Settings"
+      >
+        <Settings2 className="w-4 h-4" />
+      </Link>
+      <Link
         to="/login"
         className="inline-flex items-center gap-1 px-4 py-2 border border-slate-700 rounded-full text-sm font-semibold text-white hover:bg-slate-800 transition-colors"
       >
@@ -821,6 +836,45 @@ const ResultSection = ({ title, icon: Icon, children, onCopy }: { title: string,
 // --- Main App ---
 
 export default function App() {
+  // Load settings from localStorage
+  const [appSettings] = useState(() => {
+    try {
+      const saved = localStorage.getItem('tubeflow_settings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          theme: parsed.theme || 'dark',
+          notifications: parsed.notifications || { email: true, push: false, sound: true },
+          privacy: parsed.privacy || { shareAnalytics: true, allowCookies: true, publicProfile: false },
+          editor: {
+            autoSave: parsed.editor?.autoSave ?? true,
+            gridSnap: parsed.editor?.gridSnap ?? true,
+            showRulers: parsed.editor?.showRulers ?? false,
+            defaultQuality: parsed.editor?.defaultQuality || 'high',
+          },
+          keyboard: {
+            showHints: parsed.keyboard?.showHints ?? true,
+            darkMode: parsed.keyboard?.darkMode ?? true,
+          },
+        };
+      }
+    } catch (e) {
+      console.warn('Failed to load settings:', e);
+    }
+    return {
+      theme: 'dark',
+      notifications: { email: true, push: false, sound: true },
+      privacy: { shareAnalytics: true, allowCookies: true, publicProfile: false },
+      editor: {
+        autoSave: true,
+        gridSnap: true,
+        showRulers: false,
+        defaultQuality: 'high',
+      },
+      keyboard: { showHints: true, darkMode: true },
+    };
+  });
+
   const [url, setUrl] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -855,7 +909,13 @@ export default function App() {
   const [stageSize, setStageSize] = useState({ width: 1280, height: 720, scale: 1 });
 
   // Canvas State
-  const [layers, setLayers] = useState<CanvasLayer[]>([]);
+  const [layers, setLayers] = useState<CanvasLayer[]>(() => {
+    if (appSettings.editor.autoSave) {
+      const saved = localStorage.getItem('tubeflow_canvas_layers');
+      return saved ? JSON.parse(saved) : [];
+    }
+    return [];
+  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [canvasHistory, setCanvasHistory] = useState<CanvasLayer[][]>([]);
   const [historyStep, setHistoryStep] = useState(-1);
@@ -881,6 +941,16 @@ export default function App() {
     resizeObserver.observe(containerRef.current);
     return () => resizeObserver.disconnect();
   }, [showThumbnailStudio]);
+
+  // Auto-save layers to localStorage
+  useEffect(() => {
+    if (appSettings.editor.autoSave && layers.length > 0) {
+      const timer = setTimeout(() => {
+        localStorage.setItem('tubeflow_canvas_layers', JSON.stringify(layers));
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [layers, appSettings.editor.autoSave]);
 
   const handleAIEdit = async () => {
     if (!aiCommand || layers.length === 0) return;
@@ -1001,10 +1071,22 @@ export default function App() {
     setSelectedId(null);
   };
 
+  // Grid snap helper
+  const snapToGrid = (value: number, gridSize: number = 10): number => {
+    return Math.round(value / gridSize) * gridSize;
+  };
+
   const updateLayer = (id: string, attrs: Partial<CanvasLayer>) => {
-    const newLayers = layers.map(l => l.id === id ? { ...l, ...attrs } : l);
+    let updatedAttrs = { ...attrs };
+    
+    // Apply grid snapping if enabled
+    if (appSettings.editor.gridSnap) {
+      if (updatedAttrs.x !== undefined) updatedAttrs.x = snapToGrid(updatedAttrs.x);
+      if (updatedAttrs.y !== undefined) updatedAttrs.y = snapToGrid(updatedAttrs.y);
+    }
+    
+    const newLayers = layers.map(l => l.id === id ? { ...l, ...updatedAttrs } : l);
     setLayers(newLayers);
-    // Debounce history save for properties? For now just save.
     saveToCanvasHistory(newLayers);
   };
 
@@ -1233,7 +1315,16 @@ export default function App() {
   const downloadThumbnail = () => {
     if (!stageRef.current) return;
     
-    const uri = stageRef.current.toDataURL({ pixelRatio: 2 });
+    // Get pixel ratio based on quality setting
+    const qualityMap: { [key: string]: number } = {
+      high: 4,    // 2K
+      medium: 2,  // 1080p
+      low: 1      // 720p
+    };
+    const quality = appSettings.editor?.defaultQuality || 'high';
+    const pixelRatio = qualityMap[quality] || 2;
+    
+    const uri = stageRef.current.toDataURL({ pixelRatio });
     const a = document.createElement('a');
     a.href = uri;
     const userName = "ZASCK";
@@ -1400,6 +1491,35 @@ export default function App() {
                         }
                       }}
                     >
+                      {/* Grid overlay when showRulers is enabled */}
+                      {appSettings?.editor?.showRulers && (
+                        <Layer>
+                          {/* Vertical grid lines */}
+                          {[...Array(Math.ceil(1280 / 50))].map((_, i) => (
+                            <Rect
+                              key={`grid-v-${i}`}
+                              x={i * 50}
+                              y={0}
+                              width={1}
+                              height={720}
+                              fill="rgba(255,255,255,0.05)"
+                              listening={false}
+                            />
+                          ))}
+                          {/* Horizontal grid lines */}
+                          {[...Array(Math.ceil(720 / 50))].map((_, i) => (
+                            <Rect
+                              key={`grid-h-${i}`}
+                              x={0}
+                              y={i * 50}
+                              width={1280}
+                              height={1}
+                              fill="rgba(255,255,255,0.05)"
+                              listening={false}
+                            />
+                          ))}
+                        </Layer>
+                      )}
                       <Layer>
                         {layers.map((layer) => {
                           if (layer.type === 'image') {
@@ -1437,6 +1557,17 @@ export default function App() {
                         })}
                       </Layer>
                     </Stage>
+
+                    {/* Keyboard Hints */}
+                    {appSettings?.keyboard?.showHints && (
+                      <div className="absolute top-4 left-4 bg-black/70 backdrop-blur-md border border-white/10 rounded-lg p-3 text-xs text-slate-300 space-y-1 max-w-xs">
+                        <p className="font-semibold text-white mb-2">Keyboard Shortcuts</p>
+                        <p><span className="text-emerald-400 font-mono">Ctrl+Z</span> Undo</p>
+                        <p><span className="text-emerald-400 font-mono">Ctrl+Y</span> Redo</p>
+                        <p><span className="text-emerald-400 font-mono">Delete</span> Remove layer</p>
+                        <p><span className="text-emerald-400 font-mono">Arrows</span> Move selected</p>
+                      </div>
+                    )}
 
                     <div className="absolute bottom-4 left-4 flex gap-2">
                       <button 
