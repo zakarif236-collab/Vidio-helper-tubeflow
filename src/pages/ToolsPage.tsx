@@ -1,12 +1,21 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Clock, Sparkles, Tag, Zap, Image as ImageIcon, FileText, MessageSquare, Settings2, Plus } from 'lucide-react';
+import { ArrowLeft, Clock, Sparkles, Tag, Zap, Image as ImageIcon, FileText, MessageSquare, Settings2, Plus, Lightbulb } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const ToolsPage = () => {
   const navigate = useNavigate();
 
   const tools = [
+    {
+      id: 'idea-to-video',
+      name: 'Idea → Full Video Package',
+      description: 'Transform any idea into a complete, production-ready video with script, transcript, chapters, SEO, and socials.',
+      icon: Lightbulb,
+      color: 'from-emerald-500 to-teal-500',
+      path: '/idea-to-video',
+      featured: true,
+    },
     {
       id: 'auto-chapters',
       name: 'Auto Chapters',
@@ -96,8 +105,38 @@ const ToolsPage = () => {
 
       {/* Tools Grid */}
       <div className="max-w-7xl mx-auto p-8">
+        {/* Featured Tool */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          onClick={() => navigate(tools[0].path)}
+          className="group cursor-pointer mb-8"
+        >
+          <div className="relative overflow-hidden bg-gradient-to-r from-emerald-500/10 to-teal-500/10 border-2 border-emerald-500/50 rounded-2xl p-8 hover:border-emerald-400 transition-all hover:shadow-lg hover:shadow-emerald-500/20">
+            <div className="flex items-start justify-between">
+              <div className="flex-1">
+                <div className="inline-flex items-center gap-2 px-3 py-1 bg-emerald-500/20 border border-emerald-500/50 rounded-full mb-4">
+                  <Sparkles className="w-4 h-4 text-emerald-400" />
+                  <span className="text-xs font-semibold text-emerald-400">⭐ Featured</span>
+                </div>
+                <h2 className="text-3xl font-bold mb-2">{tools[0].name}</h2>
+                <p className="text-slate-300 mb-4 text-lg">{tools[0].description}</p>
+                <div className="flex items-center gap-2 text-emerald-400 group-hover:gap-3 transition-all">
+                  <span className="font-semibold">Get Started</span>
+                  <Plus className="w-5 h-5" />
+                </div>
+              </div>
+              <div className={`flex-shrink-0 p-4 bg-gradient-to-br ${tools[0].color} rounded-xl`}>
+                <Lightbulb className="w-12 h-12 text-white" />
+              </div>
+            </div>
+          </div>
+        </motion.div>
+
+        <h2 className="text-2xl font-bold mb-6 mt-12">All Tools</h2>
+
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {tools.map((tool, idx) => {
+          {tools.slice(1).map((tool, idx) => {
             const Icon = tool.icon;
             return (
               <motion.div

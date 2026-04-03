@@ -1,106 +1,120 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Sparkles, Play } from 'lucide-react';
+import {
+  Clock,
+  FileText,
+  Lightbulb,
+  LogIn,
+  MessageSquare,
+  Play,
+  Sparkles,
+  Zap,
+} from 'lucide-react';
 
 const HomePage = () => {
+  const tools = [
+    {
+      name: 'Idea to Video',
+      description: 'Build a full video package from a single idea.',
+      icon: Lightbulb,
+      path: '/idea-to-video',
+      accent: 'from-emerald-500 to-teal-500',
+    },
+    {
+      name: 'Auto Chapters',
+      description: 'Generate clean chapter timestamps automatically.',
+      icon: Clock,
+      path: '/tools/auto-chapters',
+      accent: 'from-sky-500 to-cyan-500',
+    },
+    {
+      name: 'AI Summary',
+      description: 'Turn long content into a short usable summary.',
+      icon: FileText,
+      path: '/tools/ai-summary',
+      accent: 'from-violet-500 to-fuchsia-500',
+    },
+    {
+      name: 'Highlight Finder',
+      description: 'Pull the moments worth clipping and posting.',
+      icon: Zap,
+      path: '/tools/highlight-finder',
+      accent: 'from-amber-500 to-orange-500',
+    },
+    {
+      name: 'Transcript Gen',
+      description: 'Convert spoken content into editable text.',
+      icon: MessageSquare,
+      path: '/tools/transcript-gen',
+      accent: 'from-rose-500 to-pink-500',
+    },
+    {
+      name: 'SEO Generator',
+      description: 'Create titles, keywords, and descriptions fast.',
+      icon: Sparkles,
+      path: '/tools/seo-generator',
+      accent: 'from-green-500 to-emerald-500',
+    },
+  ];
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-black text-slate-100 p-6">
-      {/* Navigation */}
-      <div className="fixed top-0 left-0 right-0 z-50 px-6 py-4 flex justify-between items-center bg-black/50 backdrop-blur-md border-b border-white/5">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center">
-            <Play className="w-5 h-5 text-black fill-current" />
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-black text-slate-100">
+      <header className="sticky top-0 z-50 border-b border-white/5 bg-black/45 backdrop-blur-md">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500">
+              <Play className="h-5 w-5 fill-current text-black" />
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.3em] text-emerald-400">Tubeflow</p>
+              <h1 className="text-lg font-semibold text-white">Home</h1>
+            </div>
           </div>
-          <span className="text-xl font-bold tracking-tight">Video<span className="text-emerald-500">Helper</span></span>
-        </div>
-        <Link
-          to="/tools"
-          className="inline-flex items-center gap-1 px-4 py-2 bg-emerald-500/20 border border-emerald-500/50 rounded-lg text-emerald-400 hover:bg-emerald-500/30 transition-colors text-sm font-semibold"
-        >
-          <Sparkles className="w-4 h-4" />
-          Tools
-        </Link>
-      </div>
 
-      <div className="max-w-2xl text-center">
-        {/* Hero */}
-        <div className="mb-12">
-          <h1 className="text-5xl font-bold mb-4 flex items-center justify-center gap-3">
-            <Sparkles className="w-12 h-12 text-emerald-500" />
-            <span>VideoHelper</span>
-          </h1>
-          <p className="text-xl text-slate-300 mb-4">
-            Everything you need to optimize your video content in one place.
-          </p>
-          <p className="text-slate-400">
-            AI-powered tools for thumbnails, SEO, transcripts, captions, and more.
-          </p>
-        </div>
-
-        {/* CTA Buttons */}
-        <div className="flex flex-col sm:flex-row gap-4 justify-center mb-12">
           <Link
             to="/login"
-            className="px-8 py-3 rounded-lg font-semibold bg-blue-600 text-white hover:bg-blue-500 transition-colors inline-flex items-center justify-center gap-2"
+            className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/80 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800"
           >
-            <Play className="w-5 h-5" />
+            <LogIn className="h-4 w-4" />
             Login
           </Link>
-          <Link
-            to="/signup"
-            className="px-8 py-3 rounded-lg font-semibold bg-emerald-600 text-white hover:bg-emerald-500 transition-colors inline-flex items-center justify-center gap-2"
-          >
-            <Sparkles className="w-5 h-5" />
-            Sign Up
-          </Link>
-          <Link
-            to="/tools"
-            className="px-8 py-3 rounded-lg font-semibold bg-slate-800 text-white hover:bg-slate-700 transition-colors inline-flex items-center justify-center gap-2"
-          >
-            Explore Tools
-          </Link>
         </div>
+      </header>
 
-        {/* Features Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-left bg-slate-900/50 border border-slate-800 rounded-2xl p-8">
-          <div className="space-y-2">
-            <h3 className="font-semibold text-emerald-400 flex items-center gap-2">
-              ✨ Auto Chapters
-            </h3>
-            <p className="text-sm text-slate-400">Generate smart timestamps automatically</p>
+      <main className="mx-auto max-w-7xl px-6 py-10 sm:py-14">
+        <section className="mb-8 rounded-3xl border border-slate-800 bg-slate-900/60 p-6 sm:p-8">
+          <div className="max-w-3xl">
+            <p className="mb-3 text-sm font-medium uppercase tracking-[0.28em] text-slate-400">Workspace</p>
+            <h2 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">Open a tool and start working.</h2>
+            <p className="mt-3 text-base text-slate-400 sm:text-lg">
+              Home now goes straight to your tool dashboard instead of a marketing front page.
+            </p>
           </div>
-          <div className="space-y-2">
-            <h3 className="font-semibold text-emerald-400 flex items-center gap-2">
-              📝 AI Summary
-            </h3>
-            <p className="text-sm text-slate-400">Concise content summaries in seconds</p>
-          </div>
-          <div className="space-y-2">
-            <h3 className="font-semibold text-emerald-400 flex items-center gap-2">
-              🎯 Highlight Finder
-            </h3>
-            <p className="text-sm text-slate-400">Find engaging moments for shorts</p>
-          </div>
-          <div className="space-y-2">
-            <h3 className="font-semibold text-emerald-400 flex items-center gap-2">
-              🚀 SEO Generator
-            </h3>
-            <p className="text-sm text-slate-400">Optimized titles & keywords</p>
-          </div>
-          <div className="space-y-2">
-            <h3 className="font-semibold text-emerald-400 flex items-center gap-2">
-              💬 Transcript Gen
-            </h3>
-            <p className="text-sm text-slate-400">Speech to accurate text</p>
-          </div>
-          <div className="space-y-2">
-            <h3 className="font-semibold text-emerald-400 flex items-center gap-2">
-              📱 Social Captions
-            </h3>
-            <p className="text-sm text-slate-400">Engaging platform-specific captions</p>
-          </div>
-        </div>
-      </div>
+        </section>
+
+        <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {tools.map((tool) => {
+            const Icon = tool.icon;
+
+            return (
+              <Link
+                key={tool.name}
+                to={tool.path}
+                className="group rounded-2xl border border-slate-800 bg-slate-900/55 p-6 transition-all hover:-translate-y-1 hover:border-slate-700 hover:bg-slate-900"
+              >
+                <div className={`mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br ${tool.accent}`}>
+                  <Icon className="h-6 w-6 text-white" />
+                </div>
+                <h3 className="text-xl font-semibold text-white">{tool.name}</h3>
+                <p className="mt-2 text-sm leading-6 text-slate-400">{tool.description}</p>
+                <span className="mt-5 inline-flex text-sm font-semibold text-emerald-400 transition-transform group-hover:translate-x-1">
+                  Open tool
+                </span>
+              </Link>
+            );
+          })}
+        </section>
+      </main>
     </div>
   );
 };
