@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+openai-whisper
+spacy
+nltk
+transformers
+torch
