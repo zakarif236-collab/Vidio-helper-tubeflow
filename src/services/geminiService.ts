@@ -89,7 +89,7 @@ export interface IdeaDraftResponse {
       issues: string[];
     }>;
   };
-  source: 'local-nlp' | 'huggingface';
+  source: 'local-nlp' | 'huggingface' | 'gemini';
 }
 
 export interface IdeaDraftRequest {
@@ -289,7 +289,18 @@ export async function generateIdeaDraft(payload: IdeaDraftRequest): Promise<Idea
   });
 
   if (!response.ok) {
-    throw new Error('Failed to generate idea draft');
+    let message = 'Failed to generate idea draft';
+
+    try {
+      const errorBody = await response.json();
+      if (typeof errorBody?.error === 'string' && errorBody.error.trim()) {
+        message = errorBody.error;
+      }
+    } catch {
+      // Ignore JSON parsing errors and keep the fallback message.
+    }
+
+    throw new Error(message);
   }
 
   return await response.json();

@@ -24,6 +24,8 @@ import {
   WandSparkles,
   Flag,
   CircleCheckBig,
+  Bot,
+  ChevronRight,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { generateIdeaDraft, IdeaDraftResponse, processYouTubeUrl, processUploadedScript, ProcessingResult } from '../services/geminiService';
@@ -99,6 +101,52 @@ const DEFAULT_IDEA_SECTIONS = {
   targetMinutes: 15,
 };
 
+function buildPhaseMinutePlan(totalMinutes: number) {
+  const exact = {
+    introduction: totalMinutes * 0.1,
+    development: totalMinutes * 0.35,
+    climax: totalMinutes * 0.35,
+    resolution: totalMinutes * 0.2,
+  };
+
+  const plan = {
+    introduction: Math.max(1, Math.floor(exact.introduction)),
+    development: Math.max(1, Math.floor(exact.development)),
+    climax: Math.max(1, Math.floor(exact.climax)),
+    resolution: Math.max(1, Math.floor(exact.resolution)),
+  };
+
+  let assigned = plan.introduction + plan.development + plan.climax + plan.resolution;
+  const order = [
+    ['development', exact.development - Math.floor(exact.development)],
+    ['climax', exact.climax - Math.floor(exact.climax)],
+    ['resolution', exact.resolution - Math.floor(exact.resolution)],
+    ['introduction', exact.introduction - Math.floor(exact.introduction)],
+  ] as const;
+
+  let index = 0;
+  while (assigned < totalMinutes) {
+    const phase = order[index % order.length][0];
+    plan[phase] += 1;
+    assigned += 1;
+    index += 1;
+  }
+
+  return plan;
+}
+
+function formatPhaseTimingLabel(totalMinutes: number, phase: 'introduction' | 'development' | 'climax' | 'resolution') {
+  const exactMinutes = totalMinutes * (phase === 'introduction' ? 0.1 : phase === 'resolution' ? 0.2 : 0.35);
+  const lower = Math.max(1, Math.floor(exactMinutes));
+  const upper = Math.max(lower, Math.ceil(exactMinutes));
+
+  if (lower === upper) {
+    return `${lower} min`;
+  }
+
+  return `${lower}-${upper} min`;
+}
+
 function normalizeIdeaSectionsState(sections?: Partial<IdeaDraftResponse['sections']>) {
   return {
     introduction: typeof sections?.introduction === 'string' ? sections.introduction : DEFAULT_IDEA_SECTIONS.introduction,
@@ -170,7 +218,7 @@ function normalizeIdeaDraftMeta(response: IdeaDraftResponse, fallbackSections: t
     cues: Array.isArray(response?.cues) ? response.cues : [],
     timeline: Array.isArray(response?.timeline) ? response.timeline : [],
     validation: safeValidation,
-    source: response?.source === 'huggingface' ? 'huggingface' : 'local-nlp',
+    source: response?.source === 'gemini' ? 'gemini' : response?.source === 'huggingface' ? 'huggingface' : 'local-nlp',
   };
 }
 
@@ -214,15 +262,16 @@ function getSectionVisualState(wordCount: number, minimumWords: number) {
 }
 
 function formatTimelineWindow(minutes: number, index: number, totalMinutes: number) {
-  const ranges = [
-    '1-2 min',
-    '3-5 min',
-    '4-5 min',
-    '2-3 min',
+  const phaseOrder: Array<'introduction' | 'development' | 'climax' | 'resolution'> = [
+    'introduction',
+    'development',
+    'climax',
+    'resolution',
   ];
 
-  if (totalMinutes === 15 && ranges[index]) {
-    return ranges[index];
+  const phase = phaseOrder[index];
+  if (phase) {
+    return formatPhaseTimingLabel(totalMinutes, phase);
   }
 
   if (minutes <= 1) {
@@ -234,6 +283,45 @@ function formatTimelineWindow(minutes: number, index: number, totalMinutes: numb
 
 function formatClockLabel(totalMinutes: number) {
   return `${String(totalMinutes).padStart(2, '0')}:00`;
+}
+
+function getTargetWordRange(totalMinutes: number) {
+  if (totalMinutes === 8) {
+    return { min: 1000, max: 1200 };
+  }
+
+  if (totalMinutes === 10) {
+    return { min: 1200, max: 1400 };
+  }
+
+  if (totalMinutes === 20) {
+    return { min: 2300, max: 2500 };
+  }
+
+  return { min: 1800, max: 2000 };
+}
+
+function countGeneratedWords(text: string) {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function getScriptWordTarget(totalMinutes: number): number {
+  if (totalMinutes === 8) return 1100;
+  if (totalMinutes === 10) return 1300;
+  if (totalMinutes === 20) return 2400;
+  return 1900;
+}
+
+function formatIdeaDraftSource(source: IdeaDraftResponse['source']) {
+  if (source === 'gemini') {
+    return 'Gemini expansion';
+  }
+
+  if (source === 'huggingface') {
+    return 'Hugging Face expansion';
+  }
+
+  return 'Local NLP fallback';
 }
 
 function extractKeywords(text: string, limit = 8) {
@@ -338,6 +426,10 @@ const StudioPage = () => {
     resolution: getSectionVisualState(countSectionWords(ideaSections.resolution), IDEA_SECTION_MINIMUMS.resolution),
   };
 
+  const ideaPhaseMinutes = buildPhaseMinutePlan(ideaSections.targetMinutes);
+  const ideaDraftWordRange = getTargetWordRange(ideaDraftMeta?.sections.targetMinutes ?? ideaSections.targetMinutes);
+  const ideaDraftWordCount = ideaDraftMeta ? countGeneratedWords(ideaDraftMeta.draft) : 0;
+
   const handleProcessYouTube = async () => {
     if (!youtubeUrl.trim()) {
       setError('Please enter a YouTube URL');
@@ -410,7 +502,7 @@ const StudioPage = () => {
       setSelectedPresetId(null);
     } catch (err) {
       console.error('Error generating idea draft:', err);
-      setError('Failed to generate an idea draft. Please try again.');
+      setError(err instanceof Error ? err.message : 'Failed to generate an idea draft. Please try again.');
     } finally {
       setIdeaLoading(false);
     }
@@ -611,12 +703,17 @@ const StudioPage = () => {
                         <div>
                           <p className="text-sm font-semibold text-amber-200">Draft inserted into the script editor</p>
                           <p className="text-xs text-amber-100/80">
-                            Source: {ideaDraftMeta.source === 'huggingface' ? 'Hugging Face expansion' : 'Local NLP fallback'}
+                            Source: {formatIdeaDraftSource(ideaDraftMeta.source)}
                           </p>
                         </div>
-                        <span className="rounded-full border border-amber-400/30 px-2 py-1 text-[11px] uppercase tracking-[0.22em] text-amber-300">
-                          {ideaDraftMeta.validation.sentenceCount} sentence{ideaDraftMeta.validation.sentenceCount === 1 ? '' : 's'}
-                        </span>
+                        <div className="flex flex-col items-end gap-2">
+                          <span className="rounded-full border border-amber-400/30 px-2 py-1 text-[11px] uppercase tracking-[0.22em] text-amber-300">
+                            {ideaDraftMeta.validation.sentenceCount} sentence{ideaDraftMeta.validation.sentenceCount === 1 ? '' : 's'}
+                          </span>
+                          <span className="text-[11px] text-amber-100/80">
+                            {ideaDraftWordCount} words generated, target {ideaDraftWordRange.min}-{ideaDraftWordRange.max}
+                          </span>
+                        </div>
                       </div>
                       <div className="mt-4 grid gap-3 md:grid-cols-2">
                         {ideaDraftMeta.validation.sectionValidations.map((sectionValidation) => (
@@ -761,6 +858,8 @@ const StudioPage = () => {
                     <div className="rounded-2xl border border-amber-400/20 bg-black/20 px-4 py-3 text-right">
                       <p className="text-[11px] uppercase tracking-[0.22em] text-amber-300">Target length</p>
                       <p className="mt-1 text-lg font-semibold text-white">{ideaDraftMeta.sections.targetMinutes} min</p>
+                      <p className="mt-1 text-xs text-slate-300">{ideaDraftWordCount} words</p>
+                      <p className="mt-1 text-[11px] text-amber-200">Goal {ideaDraftWordRange.min}-{ideaDraftWordRange.max}</p>
                     </div>
                   </div>
                 </div>
@@ -775,10 +874,10 @@ const StudioPage = () => {
                       <div className="timeline-board rounded-2xl border border-white/10 bg-[#1b222d]/70 p-0 overflow-hidden">
                         <div className="timeline-phase-row grid grid-cols-4 border-b border-white/10 bg-gradient-to-r from-slate-700/40 via-slate-700/20 to-slate-700/40">
                           {[
-                            { label: 'Idea' },
-                            { label: 'Build Up' },
-                            { label: 'Climax' },
-                            { label: 'Resolution' },
+                            { label: 'Initial Concept' },
+                            { label: 'Develop Story' },
+                            { label: 'Key Moment' },
+                            { label: 'Wrap Up' },
                           ].map((phase, idx) => (
                             <div key={phase.label} className={`timeline-phase-tab ${idx === 0 ? 'timeline-phase-tab-active' : ''}`}>
                               {phase.label}
@@ -1241,7 +1340,7 @@ const StudioPage = () => {
                 <p className="text-xs uppercase tracking-[0.28em] text-amber-300">Idea Draft</p>
                 <h2 className="mt-2 text-2xl font-bold text-white">Turn a short idea into a script draft</h2>
                 <p className="mt-2 text-sm text-slate-400">
-                  Enter 1 to 2 sentences. The backend expands it into a structured draft and places it in the Script section for editing.
+                  Enter 1 to 2 sentences. The backend expands it into a full 4-phase spoken script and places it in the Script section for editing.
                 </p>
               </div>
               <button
@@ -1280,6 +1379,43 @@ const StudioPage = () => {
                 <span>{ideaInput.trim().split(/\s+/).filter(Boolean).length} words</span>
               </div>
 
+              {ideaInput.trim().length > 0 && (() => {
+                const target = getScriptWordTarget(ideaSections.targetMinutes);
+                const { min, max } = getTargetWordRange(ideaSections.targetMinutes);
+                const phases = [
+                  { label: 'Initial Concept', pct: '10%', words: Math.round(target * 0.1) },
+                  { label: 'Develop Story',   pct: '35%', words: Math.round(target * 0.35) },
+                  { label: 'Key Moment',      pct: '35%', words: Math.round(target * 0.35) },
+                  { label: 'Wrap Up',         pct: '20%', words: Math.round(target * 0.2) },
+                ];
+                return (
+                  <div className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-500/5 p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Bot className="h-4 w-4 text-amber-300" />
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">AI Script Analysis</p>
+                    </div>
+                    <p className="text-sm text-slate-200 mb-1">
+                      For a <span className="font-bold text-amber-300">{ideaSections.targetMinutes}-minute script</span>, your idea needs
+                      <span className="font-bold text-white"> ~{target.toLocaleString()} words</span>
+                      <span className="text-slate-400"> ({min.toLocaleString()}–{max.toLocaleString()} range)</span>.
+                    </p>
+                    <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      {phases.map((phase) => (
+                        <div key={phase.label} className="rounded-xl border border-white/8 bg-slate-900/60 px-3 py-2">
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-amber-300/80">{phase.label}</p>
+                          <p className="mt-1 text-sm font-bold text-white">~{phase.words.toLocaleString()}</p>
+                          <p className="text-[10px] text-slate-400">{phase.pct} of script</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-3 flex items-center gap-1.5 text-[11px] text-slate-400">
+                      <ChevronRight className="h-3 w-3 text-amber-400" />
+                      Hit <span className="text-amber-300 font-medium">Generate script draft</span> to expand your idea into this structure.
+                    </div>
+                  </div>
+                );
+              })()}
+
                 <button
                   onClick={handleGenerateIdeaDraft}
                   disabled={ideaLoading}
@@ -1288,19 +1424,19 @@ const StudioPage = () => {
                   {ideaLoading ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                    Generating storyboard...
+                    Generating script...
                     </>
                   ) : (
                     <>
                       <Lightbulb className="h-4 w-4" />
-                    Generate storyboard
+                    Generate script draft
                     </>
                   )}
                 </button>
 
               {ideaDraftMeta && hasGeneratedStoryboardContent(ideaDraftMeta.sections) && (
                 <p className="mt-3 text-xs text-amber-200">
-                  Storyboard content has been generated below for Initial Concept, Develop Story, Key Moment, and Wrap Up.
+                  Script content has been generated below for Initial Concept, Develop Story, Key Moment, and Wrap Up.
                 </p>
               )}
             </div>
@@ -1333,8 +1469,8 @@ const StudioPage = () => {
               <div className="rounded-2xl border border-white/10 bg-[#171d27] p-0 overflow-hidden">
                 <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3 bg-gradient-to-r from-slate-800/80 to-slate-800/40">
                   <div>
-                    <p className="text-sm font-semibold text-white">Idea storyboard structure</p>
-                    <p className="text-xs text-slate-400">Build the idea in the same phase flow as the script timeline, with larger writing areas for each section.</p>
+                    <p className="text-sm font-semibold text-white">Adaptive script structure</p>
+                    <p className="text-xs text-slate-400">Build the idea in the same four-phase flow as the generated script, with timing that adapts to the selected length.</p>
                   </div>
                   <label className="flex items-center gap-2 text-sm font-semibold text-slate-200">
                     Length
@@ -1343,6 +1479,7 @@ const StudioPage = () => {
                       onChange={(e) => setIdeaSections((current) => ({ ...current, targetMinutes: Number(e.target.value) }))}
                       className="rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white outline-none transition-colors focus:border-amber-400"
                     >
+                      <option value={8}>8 min</option>
                       <option value={10}>10 min</option>
                       <option value={15}>15 min</option>
                       <option value={20}>20 min</option>
@@ -1352,10 +1489,10 @@ const StudioPage = () => {
 
                 <div className="timeline-phase-row grid grid-cols-4 border-b border-white/10 bg-gradient-to-r from-slate-700/40 via-slate-700/20 to-slate-700/40">
                   {[
-                    { label: 'Idea' },
-                    { label: 'Build Up' },
-                    { label: 'Climax' },
-                    { label: 'Resolution' },
+                    { label: 'Initial Concept' },
+                    { label: 'Develop Story' },
+                    { label: 'Key Moment' },
+                    { label: 'Wrap Up' },
                   ].map((phase, idx) => (
                     <div key={phase.label} className={`timeline-phase-tab ${idx === 0 ? 'timeline-phase-tab-active' : ''}`}>
                       {phase.label}
@@ -1411,11 +1548,7 @@ const StudioPage = () => {
                           </div>
                           <div className="mt-3 h-px w-full bg-white/10" />
                           <p className="mt-3 text-lg font-medium text-amber-200">
-                            {formatTimelineWindow(
-                              index === 0 ? Math.max(1, Math.round(ideaSections.targetMinutes * 0.13)) : index === 1 ? Math.max(2, Math.round(ideaSections.targetMinutes * 0.27)) : index === 2 ? Math.max(2, Math.round(ideaSections.targetMinutes * 0.27)) : Math.max(1, Math.round(ideaSections.targetMinutes * 0.2)),
-                              index,
-                              ideaSections.targetMinutes,
-                            )}
+                            {formatTimelineWindow(ideaPhaseMinutes[section.key], index, ideaSections.targetMinutes)}
                           </p>
                           <p className="mt-1 text-xs text-slate-400">{section.hint}</p>
                           <textarea
