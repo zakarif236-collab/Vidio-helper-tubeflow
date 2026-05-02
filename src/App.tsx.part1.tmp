@@ -1,0 +1,149 @@
+﻿import React, { useState, useRef, useEffect } from 'react';
+import { 
+  Youtube, 
+  Upload, 
+  Search, 
+  Copy, 
+  Download, 
+  Share2, 
+  Check, 
+  Clock, 
+  FileText, 
+  Tag, 
+  Star, 
+  Image as ImageIcon,
+  ChevronRight,
+  Loader2,
+  Sparkles,
+  Play,
+  Music,
+  Video,
+  MessageSquare,
+  Type as TypeIcon,
+  DownloadCloud,
+  X,
+  Send,
+  History as HistoryIcon,
+  Trophy,
+  Gamepad2,
+  RotateCcw,
+  PlusCircle,
+  Plus,
+  Layers,
+  Settings2,
+  Square,
+  Circle,
+  MousePointer2,
+  Trash2,
+  Eye,
+  EyeOff,
+  Lock,
+  Unlock,
+  Undo2,
+  Redo2,
+  Maximize2,
+  Palette,
+  Sun,
+  Contrast,
+  Droplets,
+  Focus
+} from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Stage, Layer, Rect, Circle as KonvaCircle, Star as KonvaStar, Text as KonvaText, Image as KonvaImage, Transformer } from 'react-konva';
+import useImage from 'use-image';
+import { analyzeYouTubeVideo, analyzeUploadedVideo, generateThumbnail, editThumbnail, VideoAnalysis } from './services/geminiService';
+import { MiniGame } from './components/LoadingMiniGame';
+
+// --- Types ---
+
+interface CanvasLayer {
+  id: string;
+  type: 'image' | 'text' | 'shape';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  scaleX: number;
+  scaleY: number;
+  text?: string;
+  fontSize?: number;
+  fontFamily?: string;
+  fontWeight?: string;
+  fill?: string;
+  opacity: number;
+  visible: boolean;
+  locked: boolean;
+  src?: string;
+  shapeType?: 'rect' | 'circle' | 'star';
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  blur: number;
+  shadowColor?: string;
+  shadowBlur?: number;
+  shadowOffsetX?: number;
+  shadowOffsetY?: number;
+  shadowOpacity?: number;
+}
+
+interface HistoryItem {
+  id: string;
+  timestamp: number;
+  title: string;
+  results: VideoAnalysis;
+  thumbnail: string | null;
+}
+
+// --- Components ---
+
+const Navbar = ({ onShowHistory }: { onShowHistory: () => void }) => (
+  <nav className="fixed top-0 left-0 right-0 z-50 px-6 py-4 flex justify-between items-center bg-black/50 backdrop-blur-md border-b border-white/5">
+    <div className="flex items-center gap-2">
+      <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center">
+        <Play className="w-5 h-5 text-black fill-current" />
+      </div>
+      <span className="text-xl font-bold tracking-tight">Video<span className="text-emerald-500">Helper</span></span>
+    </div>
+    <div className="hidden md:flex items-center gap-8 text-sm font-medium text-zinc-400">
+      <a href="#features" className="hover:text-white transition-colors">Features</a>
+      <button onClick={onShowHistory} className="flex items-center gap-2 hover:text-white transition-colors">
+        <HistoryIcon className="w-4 h-4" />
+        History
+      </button>
+      <a href="#pricing" className="hover:text-white transition-colors">Pricing</a>
+    </div>
+    <div className="flex items-center gap-2">
+      <Link
+        to="/creator-lab"
+        className="inline-flex items-center gap-1 px-4 py-2 bg-emerald-500/20 border border-emerald-500/50 rounded-lg text-emerald-400 hover:bg-emerald-500/30 transition-colors text-sm font-semibold"
+        title="Thumbnail Editor - Advanced Thumbnail Designer"
+      >
+        <Sparkles className="w-4 h-4" />
+        Thumbnail Editor
+      </Link>
+      <Link
+        to="/settings"
+        className="inline-flex items-center gap-1 px-4 py-2 text-slate-300 hover:text-white transition-colors"
+        title="Settings"
+      >
+        <Settings2 className="w-4 h-4" />
+      </Link>
+      <Link
+        to="/login"
+        className="inline-flex items-center gap-1 px-4 py-2 border border-slate-700 rounded-full text-sm font-semibold text-white hover:bg-slate-800 transition-colors"
+      >
+        <Play className="w-4 h-4" />
+        Login
+      </Link>
+      <Link
+        to="/signup"
+        className="inline-flex items-center gap-1 px-4 py-2 bg-blue-600 rounded-full text-sm font-semibold text-white hover:bg-blue-500 transition-colors"
+      >
+        <Plus className="w-4 h-4" />
+        Sign Up
+      </Link>
+    </div>
+  </nav>
+);

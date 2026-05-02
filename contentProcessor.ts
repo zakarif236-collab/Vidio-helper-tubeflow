@@ -67,7 +67,7 @@ export interface IdeaDraftResult {
   outline: string[];
   keywords: string[];
   validation: IdeaDraftValidation;
-  source: 'local-nlp' | 'huggingface' | 'gemini';
+  source: 'local-nlp' | 'huggingface' | 'groq';
   sections: Required<IdeaDraftSectionsInput>;
   cues: IdeaImmersiveCue[];
   timeline: IdeaTimelineItem[];
@@ -94,13 +94,6 @@ const IDEA_PHASE_RATIOS: Record<IdeaPhaseKey, number> = {
   resolution: 0.2,
 };
 
-const IDEA_WORD_TARGETS: Record<number, number> = {
-  8: 1100,
-  10: 1300,
-  15: 1900,
-  20: 2400,
-};
-
 function normalizeTargetMinutes(totalMinutes: number | undefined): 8 | 10 | 15 | 20 {
   if (typeof totalMinutes !== 'number' || !Number.isFinite(totalMinutes)) {
     return 15;
@@ -118,10 +111,6 @@ function normalizeTargetMinutes(totalMinutes: number | undefined): 8 | 10 | 15 |
   });
 
   return bestMatch;
-}
-
-function getTargetWordCount(totalMinutes: number | undefined): number {
-  return IDEA_WORD_TARGETS[normalizeTargetMinutes(totalMinutes)];
 }
 
 function buildPhaseMinutePlan(totalMinutes: number | undefined): Record<IdeaPhaseKey, number> {
@@ -383,6 +372,10 @@ function parseGeneratedIdeaSections(script: string): Partial<Required<IdeaDraftS
     { key: 'development' as const, label: IDEA_PHASE_HEADINGS.development },
     { key: 'climax' as const, label: IDEA_PHASE_HEADINGS.climax },
     { key: 'resolution' as const, label: IDEA_PHASE_HEADINGS.resolution },
+    // TikTok section aliases: Hook -> introduction, Value -> development, CTA -> resolution
+    { key: 'introduction' as const, label: 'Hook' },
+    { key: 'development' as const, label: 'Value' },
+    { key: 'resolution' as const, label: 'CTA' },
   ];
 
   const positions = headings
@@ -609,9 +602,16 @@ export function buildIdeaScriptDraft(
   source: IdeaDraftResult['source'] = 'local-nlp'
 ): IdeaDraftResult {
   const parsedSections = expandedText ? parseGeneratedIdeaSections(expandedText) : {};
+  // Only apply user-provided overrides when they have actual content, so AI-parsed
+  // sections are not silently replaced by the empty default strings from the frontend.
+  const userOverrides: Partial<Required<IdeaDraftSectionsInput>> = {};
+  if (sectionInput?.introduction?.trim()) userOverrides.introduction = sectionInput.introduction;
+  if (sectionInput?.development?.trim()) userOverrides.development = sectionInput.development;
+  if (sectionInput?.climax?.trim()) userOverrides.climax = sectionInput.climax;
+  if (sectionInput?.resolution?.trim()) userOverrides.resolution = sectionInput.resolution;
   const sections = normalizeIdeaSections(idea, undefined, {
     ...parsedSections,
-    ...sectionInput,
+    ...userOverrides,
     targetMinutes: sectionInput?.targetMinutes,
   });
   const validation = validateIdea(idea, sections);
