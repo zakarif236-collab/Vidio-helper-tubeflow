@@ -27,5 +27,17 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "noEmit": true
-  }
+  },
+  "include": [
+    "src/**/*",
+    "server.ts",
+    "contentProcessor.ts",
+    "vite.config.ts",
+    "sectionValidation.js"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules",
+    "*.js"
+  ]
 }

@@ -1,20 +1,121 @@
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+﻿import Groq from "groq-sdk";
 
-const ai = new GoogleGenAI({
-  apiKey: import.meta.env.VITE_GEMINI_API_KEY || "",
+const groq = new Groq({
+  apiKey: import.meta.env.VITE_GROQ_API_KEY || "",
+  dangerouslyAllowBrowser: true,
 });
+
+async function callGroq(prompt: string, jsonMode = false): Promise<string> {
+  const completion = await groq.chat.completions.create({
+    messages: [{ role: "user", content: prompt }],
+    model: "llama-3.3-70b-versatile",
+    temperature: 0.7,
+    ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
+  });
+  return completion.choices[0]?.message?.content || "";
+}
+
+export interface ChapterEntry {
+  id: string;
+  title: string;
+  timestamp: string;
+  timeLabel: string;
+  chapterName: string;
+  summary: string;
+}
 
 export interface ProcessingResult {
   Transcript: string;
-  Chapters: string[];
+  Chapters: ChapterEntry[];
   Summary: string;
+}
+
+type ApiErrorResponse = {
+  code?: string;
+  error?: string;
+  userMessage?: string;
+};
+
+function inferFriendlyMessage(code: string | undefined, rawMessage: string, fallback: string): string {
+  const normalizedCode = code?.trim().toLowerCase();
+  const normalizedMessage = rawMessage.trim().toLowerCase();
+
+  if (normalizedCode === 'quota_exceeded' || normalizedMessage.includes('credit') || normalizedMessage.includes('quota')) {
+    return 'This AI provider has used up its credits for now. Please come back later or switch to another provider.';
+  }
+
+  if (normalizedCode === 'timeout' || normalizedMessage.includes('timeout') || normalizedMessage.includes('timed out')) {
+    return 'This is taking longer than usual. Please try again in a moment.';
+  }
+
+  if (normalizedCode === 'captions_unavailable' || normalizedMessage.includes('caption') || normalizedMessage.includes('subtitle')) {
+    return 'This video does not have usable captions yet. Try another video or paste a script instead.';
+  }
+
+  if (normalizedCode === 'video_unavailable' || normalizedMessage.includes('private') || normalizedMessage.includes('unavailable')) {
+    return 'We could not access this video. It may be private, restricted, or temporarily unavailable.';
+  }
+
+  if (normalizedCode === 'missing_configuration' || normalizedMessage.includes('api key') || normalizedMessage.includes('not configured')) {
+    return 'The AI service is not configured yet. Add a valid API key, then try again.';
+  }
+
+  if (normalizedCode === 'provider_unavailable') {
+    return 'The AI service is busy right now. Please try again in a moment.';
+  }
+
+  if (normalizedCode === 'invalid_input' && rawMessage.trim()) {
+    return rawMessage.trim();
+  }
+
+  return fallback;
+}
+
+async function extractApiErrorMessage(response: Response, fallback: string): Promise<string> {
+  let errorBody: ApiErrorResponse | null = null;
+
+  try {
+    errorBody = (await response.json()) as ApiErrorResponse;
+  } catch {
+    errorBody = null;
+  }
+
+  if (typeof errorBody?.userMessage === 'string' && errorBody.userMessage.trim()) {
+    return errorBody.userMessage;
+  }
+
+  const rawMessage = typeof errorBody?.error === 'string' ? errorBody.error : '';
+  return inferFriendlyMessage(errorBody?.code, rawMessage, fallback);
+}
+
+function buildChapterEntries(rawChapters: Array<{ timestamp: string; title: string }> | string[]): ChapterEntry[] {
+  const entries: { timestamp: string; title: string }[] = [];
+  for (const ch of rawChapters) {
+    if (typeof ch === 'string') {
+      const match = ch.match(/^(\d{1,2}:\d{2}(?::\d{2})?)\s+(.+)$/);
+      entries.push({ timestamp: match?.[1] ?? '00:00', title: match?.[2] ?? ch });
+    } else {
+      entries.push({ timestamp: ch.timestamp || '00:00', title: ch.title || 'Untitled' });
+    }
+  }
+  return entries.map((entry, idx, arr) => {
+    const nextTimestamp = arr[idx + 1]?.timestamp ?? '';
+    return {
+      id: `ch-${idx + 1}`,
+      title: entry.title,
+      timestamp: entry.timestamp,
+      timeLabel: nextTimestamp ? `${entry.timestamp} \u2192 ${nextTimestamp}` : `${entry.timestamp} \u2192 End`,
+      chapterName: entry.title,
+      summary: '',
+    };
+  });
 }
 
 function normalizeBackendScriptResult(result: ComprehensiveResult): ProcessingResult {
   return {
     Transcript: result.Transcript || '',
     Chapters: Array.isArray(result.Chapters)
-      ? result.Chapters.map((chapter) => `${chapter.timestamp} ${chapter.title}`)
+      ? buildChapterEntries(result.Chapters)
       : [],
     Summary: typeof result.Summary === 'string'
       ? result.Summary
@@ -41,18 +142,6 @@ export interface ComprehensiveResult {
   };
   ThumbnailIdeas: string[];
   SocialCaptions: string[];
-}
-
-export interface VideoAnalysis {
-  summary: string;
-  chapters: { timestamp: string; title: string }[];
-  topics: string[];
-  highlights: { timestamp: string; description: string }[];
-  transcript: string;
-  description: string;
-  titles: string[];
-  keywords: string[];
-  socialCaptions: string[];
 }
 
 export interface IdeaDraftResponse {
@@ -89,11 +178,12 @@ export interface IdeaDraftResponse {
       issues: string[];
     }>;
   };
-  source: 'local-nlp' | 'huggingface' | 'gemini';
+  source: 'local-nlp' | 'huggingface' | 'groq';
 }
 
 export interface IdeaDraftRequest {
   idea: string;
+  platform?: 'youtube' | 'tiktok';
   sections?: {
     introduction?: string;
     development?: string;
@@ -101,158 +191,6 @@ export interface IdeaDraftRequest {
     resolution?: string;
     targetMinutes?: number;
   };
-}
-
-export async function analyzeYouTubeVideo(url: string, type?: 'audio' | 'video'): Promise<VideoAnalysis> {
-  const model = "gemini-3-flash-preview";
-  
-  const prompt = `
-    Analyze the YouTube video at this URL: ${url}.
-    The user has selected to focus on the ${type || 'video'} content.
-    Provide a comprehensive analysis in JSON format with the following structure:
-    {
-      "summary": "A clear explanation of the video content",
-      "chapters": [{"timestamp": "MM:SS", "title": "Chapter Title"}],
-      "topics": ["Topic 1", "Topic 2"],
-      "highlights": [{"timestamp": "MM:SS", "description": "Highlight description"}],
-      "transcript": "A brief simulated transcript or key dialogue points",
-      "description": "An optimized YouTube description",
-      "titles": ["Catchy Title 1", "Catchy Title 2"],
-      "keywords": ["keyword1", "keyword2"],
-      "socialCaptions": ["Twitter caption", "Instagram caption"]
-    }
-    If you cannot access the video directly, infer based on the URL and common knowledge if it's a popular video, otherwise provide a high-quality template analysis for a generic video of that type.
-  `;
-
-  const response = await ai.models.generateContent({
-    model,
-    contents: [{ parts: [{ text: prompt }] }],
-    config: {
-      responseMimeType: "application/json",
-    },
-  });
-
-  return JSON.parse(response.text || "{}");
-}
-
-export async function analyzeUploadedVideo(fileData: string, mimeType: string): Promise<VideoAnalysis> {
-  const model = "gemini-3-flash-preview";
-  
-  const prompt = `
-    Analyze this uploaded video file.
-    Provide a comprehensive analysis in JSON format with the following structure:
-    {
-      "summary": "A clear explanation of the video content",
-      "chapters": [{"timestamp": "MM:SS", "title": "Chapter Title"}],
-      "topics": ["Topic 1", "Topic 2"],
-      "highlights": [{"timestamp": "MM:SS", "description": "Highlight description"}],
-      "transcript": "A full transcript of the dialogue",
-      "description": "An optimized YouTube description",
-      "titles": ["Catchy Title 1", "Catchy Title 2"],
-      "keywords": ["keyword1", "keyword2"],
-      "socialCaptions": ["Twitter caption", "Instagram caption"]
-    }
-  `;
-
-  const response = await ai.models.generateContent({
-    model,
-    contents: [
-      {
-        parts: [
-          { text: prompt },
-          {
-            inlineData: {
-              data: fileData.split(",")[1], // Remove prefix
-              mimeType: mimeType,
-            },
-          },
-        ],
-      },
-    ],
-    config: {
-      responseMimeType: "application/json",
-    },
-  });
-
-  return JSON.parse(response.text || "{}");
-}
-
-export async function generateThumbnail(prompt: string): Promise<string> {
-  const model = "gemini-2.5-flash-image";
-  
-  const response = await ai.models.generateContent({
-    model,
-    contents: [{ parts: [{ text: `A high-quality YouTube thumbnail for a video about: ${prompt}. Vibrant colors, engaging composition, no text.` }] }],
-  });
-
-  let imageUrl = "";
-  for (const part of response.candidates?.[0]?.content?.parts || []) {
-    if (part.inlineData) {
-      imageUrl = `data:image/png;base64,${part.inlineData.data}`;
-      break;
-    }
-  }
-  
-  return imageUrl;
-}
-
-export async function editThumbnail(base64Image: string, prompt: string): Promise<string> {
-  const model = "gemini-2.5-flash-image";
-  
-  const response = await ai.models.generateContent({
-    model,
-    contents: [
-      {
-        parts: [
-          {
-            inlineData: {
-              data: base64Image.split(",")[1],
-              mimeType: "image/png",
-            },
-          },
-          { text: `Edit this thumbnail based on this request: ${prompt}. Maintain the YouTube style, vibrant colors, and engaging composition.` },
-        ],
-      },
-    ],
-  });
-
-  let imageUrl = "";
-  for (const part of response.candidates?.[0]?.content?.parts || []) {
-    if (part.inlineData) {
-      imageUrl = `data:image/png;base64,${part.inlineData.data}`;
-      break;
-    }
-  }
-  
-  return imageUrl;
-}
-
-// ========== New Backend-Based Processing Functions ==========
-
-/**
- * Process YouTube transcript using backend NLP services
- * Returns comprehensive content package with chapters, SEO, thumbnails, and socials
- */
-export async function processYouTubeTranscript(
-  transcript: string,
-  subject?: string
-): Promise<ComprehensiveResult> {
-  try {
-    const response = await fetch('/api/process/youtube-transcript', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ transcript, subject })
-    });
-
-    if (!response.ok) {
-      throw new Error('Failed to process YouTube transcript');
-    }
-
-    return await response.json();
-  } catch (error) {
-    console.error('Error processing YouTube transcript:', error);
-    throw error;
-  }
 }
 
 /**
@@ -271,7 +209,7 @@ export async function processUserScript(
     });
 
     if (!response.ok) {
-      throw new Error('Failed to process script');
+      throw new Error(await extractApiErrorMessage(response, 'We could not process that script right now. Please try again in a moment.'));
     }
 
     return await response.json();
@@ -289,48 +227,10 @@ export async function generateIdeaDraft(payload: IdeaDraftRequest): Promise<Idea
   });
 
   if (!response.ok) {
-    let message = 'Failed to generate idea draft';
-
-    try {
-      const errorBody = await response.json();
-      if (typeof errorBody?.error === 'string' && errorBody.error.trim()) {
-        message = errorBody.error;
-      }
-    } catch {
-      // Ignore JSON parsing errors and keep the fallback message.
-    }
-
-    throw new Error(message);
+    throw new Error(await extractApiErrorMessage(response, 'We hit a temporary problem while generating your draft. Please try again in a moment.'));
   }
 
   return await response.json();
-}
-
-/**
- * Process subject idea into full video package
- * Requires AI-generated script as input
- * Returns: script + transcript + chapters + summary + SEO + thumbnails + socials
- */
-export async function processIdeaToVideoPackage(
-  subject: string,
-  script: string
-): Promise<ComprehensiveResult & { OriginalScript: string }> {
-  try {
-    const response = await fetch('/api/process/idea', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subject, script })
-    });
-
-    if (!response.ok) {
-      throw new Error('Failed to process idea into video package');
-    }
-
-    return await response.json();
-  } catch (error) {
-    console.error('Error processing idea:', error);
-    throw error;
-  }
 }
 
 // ========== Existing Gemini Service Functions ==========
@@ -340,48 +240,31 @@ export async function processIdeaToVideoPackage(
  * Generates transcript, chapters, and summary for a YouTube URL
  */
 export async function processYouTubeUrl(url: string): Promise<ProcessingResult> {
-  const model = "gemini-3-flash-preview";
-  
-  const prompt = `
-    Analyze the YouTube video at this URL: ${url}.
-    
-    Return ONLY valid JSON (no markdown, no code blocks) with this exact structure:
-    {
-      "Transcript": "Complete transcript of the video dialogue and narration. If you cannot access the video, create a realistic transcript based on what the video URL suggests.",
-      "Chapters": ["00:00 Intro - introduction section", "02:15 Topic A - main discussion point one", "05:30 Topic B - main discussion point two", "08:45 Conclusion - wrapping up"],
-      "Summary": "A concise 2-3 paragraph summary of the complete video content and main takeaways."
-    }
-    
-    Ensure:
-    - Transcript is detailed and realistic with timestamps
-    - Chapters have format "MM:SS Chapter Title"
-    - Summary is comprehensive but concise
-    - All fields contain substantive content
-  `;
-
-  const response = await ai.models.generateContent({
-    model,
-    contents: [{ parts: [{ text: prompt }] }],
-    config: {
-      responseMimeType: "application/json",
-    },
+  const response = await fetch('/api/youtube-to-script', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
   });
 
-  try {
-    const result = JSON.parse(response.text || "{}");
-    return {
-      Transcript: result.Transcript || "",
-      Chapters: Array.isArray(result.Chapters) ? result.Chapters : [],
-      Summary: result.Summary || ""
-    };
-  } catch (error) {
-    console.error("Error parsing YouTube response:", error);
-    return {
-      Transcript: "",
-      Chapters: [],
-      Summary: ""
-    };
+  if (!response.ok) {
+    throw new Error(await extractApiErrorMessage(response, "We could not turn that video into a script right now. Please try again in a moment."));
   }
+
+  const data = await response.json();
+
+  // Map IdeaDraftResult (from /api/youtube-to-script) → ProcessingResult
+  const summary = Array.isArray(data.timeline) && data.timeline.length > 0
+    ? (data.timeline as Array<{ summary: string }>)
+        .map((t) => t.summary)
+        .filter(Boolean)
+        .join('\n\n')
+    : '';
+
+  return {
+    Transcript: typeof data.draft === 'string' ? data.draft : '',
+    Chapters: Array.isArray(data.outline) ? buildChapterEntries(data.outline) : [],
+    Summary: summary,
+  };
 }
 
 /**
@@ -390,43 +273,49 @@ export async function processYouTubeUrl(url: string): Promise<ProcessingResult> 
  */
 export async function processUploadedScript(scriptContent: string): Promise<ProcessingResult> {
   try {
-    const model = "gemini-3-flash-preview";
-    const prompt = `
-      You have been provided with the following script/text content:
-      
-      "${scriptContent}"
-      
-      Analyze this content and return ONLY valid JSON (no markdown, no code blocks) with this exact structure:
-      {
-        "Transcript": "A refined and properly formatted transcript of the script. Add timestamps every 30-60 seconds. Maintain the original dialogue and narration structure.",
-        "Chapters": ["00:00 Section 1 Title", "02:30 Section 2 Title", "05:15 Section 3 Title", "08:00 Conclusion"],
-        "Summary": "A comprehensive 2-3 paragraph summary of the script's main content, key ideas, and takeaways."
-      }
-      
-      Ensure:
-      - Transcript includes realistic timestamps at logical break points
-      - Chapters have format "MM:SS Chapter Title" covering major sections
-      - Summary accurately captures the essence of the content
-      - All fields are substantive and well-written
-    `;
+    const prompt = `You have been provided with the following script/text content:
 
-    const response = await ai.models.generateContent({
-      model,
-      contents: [{ parts: [{ text: prompt }] }],
-      config: {
-        responseMimeType: "application/json",
-      },
-    });
+"${scriptContent}"
 
-    const result = JSON.parse(response.text || "{}");
-    const normalizedResult = {
+Analyze this content and return ONLY valid JSON (no markdown, no code blocks) with this exact structure:
+{
+  "Transcript": "A refined and properly formatted transcript of the script. Add timestamps every 30-60 seconds. Maintain the original dialogue and narration structure.",
+  "Chapters": [
+    { "id": "ch-1", "title": "Descriptive Title Based on Content", "timestamp": "00:00", "timeLabel": "00:00 → 02:30", "chapterName": "Descriptive Title Based on Content", "summary": "Brief 1-2 sentence summary of what happens in this section." },
+    { "id": "ch-2", "title": "Next Section Title", "timestamp": "02:30", "timeLabel": "02:30 → 05:15", "chapterName": "Next Section Title", "summary": "Brief summary of this section." }
+  ],
+  "Summary": "A comprehensive 2-3 paragraph summary of the script's main content, key ideas, and takeaways."
+}
+
+Ensure:
+- Transcript includes realistic timestamps at logical break points
+- Each Chapter is a JSON object with id, title, timestamp, timeLabel, chapterName, and summary
+- Chapter titles must be descriptive and specific to the content (not generic like "Introduction" or "Section 1")
+- timeLabel shows the minute range (e.g. "00:00 → 02:30")
+- summary is a short 1-2 sentence description of what happens in that part
+- Summary accurately captures the essence of the content
+- All fields are substantive and well-written`;
+
+    const text = await callGroq(prompt, true);
+    const result = JSON.parse(text || "{}");
+    const rawChapters = Array.isArray(result.Chapters) ? result.Chapters : [];
+    const normalizedResult: ProcessingResult = {
       Transcript: result.Transcript || "",
-      Chapters: Array.isArray(result.Chapters) ? result.Chapters : [],
+      Chapters: rawChapters.length > 0 && typeof rawChapters[0] === 'object'
+        ? rawChapters.map((ch: any, idx: number) => ({
+            id: ch.id || `ch-${idx + 1}`,
+            title: ch.title || ch.chapterName || `Chapter ${idx + 1}`,
+            timestamp: ch.timestamp || '00:00',
+            timeLabel: ch.timeLabel || ch.timestamp || '00:00',
+            chapterName: ch.chapterName || ch.title || `Chapter ${idx + 1}`,
+            summary: ch.summary || '',
+          }))
+        : buildChapterEntries(rawChapters),
       Summary: result.Summary || ""
     };
 
     if (!normalizedResult.Transcript && normalizedResult.Chapters.length === 0 && !normalizedResult.Summary) {
-      throw new Error('Empty Gemini script response');
+      throw new Error('Empty Groq script response');
     }
 
     return normalizedResult;
@@ -434,148 +323,5 @@ export async function processUploadedScript(scriptContent: string): Promise<Proc
     console.warn('Falling back to backend script processor:', error);
     const backendResult = await processUserScript(scriptContent);
     return normalizeBackendScriptResult(backendResult);
-  }
-}
-
-// ========== New "Idea to Full Video Package" Feature ==========
-
-export interface FullVideoPackage {
-  script: string;
-  transcript: string;
-  chapters: string[];
-  summary: string;
-  seoTitles: string[];
-  seoDescription: string;
-  keywords: string[];
-  thumbnailConcepts: string[];
-  socialCaptions: {
-    instagram: string;
-    tiktok: string;
-    twitter: string;
-    youtube: string;
-  };
-}
-
-/**
- * Generates a structured video script from a subject idea
- * Allows user to edit before finalizing
- */
-export async function generateScriptFromIdea(
-  subject: string,
-  tone: 'casual' | 'professional' | 'motivational'
-): Promise<string> {
-  const model = "gemini-3-flash-preview";
-  
-  const toneDescription = {
-    casual: "conversational, friendly, and engaging, as if talking to a friend",
-    professional: "informative, structured, and authoritative, suitable for business or educational content",
-    motivational: "inspiring, energetic, and uplifting, designed to motivate and engage the audience"
-  };
-
-  const prompt = `
-    Create a complete video script for the topic: "${subject}"
-    
-    Tone: ${toneDescription[tone]}
-    
-    Structure the script with:
-    - INTRO (30 seconds): Hook the audience, introduce the topic
-    - SECTION 1 (45 seconds): First main point with details
-    - SECTION 2 (45 seconds): Second main point with details
-    - SECTION 3 (45 seconds): Third main point with details
-    - CONCLUSION (30 seconds): Recap and call to action
-    
-    Return a naturally flowing, spoken-word script that is ready to record. 
-    Include occasional natural pauses indicated by [...], and make it sound conversational.
-    Total approximate duration: 3-4 minutes.
-  `;
-
-  const response = await ai.models.generateContent({
-    model,
-    contents: [{ parts: [{ text: prompt }] }],
-  });
-
-  return response.text || "Script generation failed. Please try again.";
-}
-
-/**
- * Generates complete video package from a finalized script
- * Produces transcript, chapters, summary, SEO, thumbnails, and social captions
- */
-export async function generateFullVideoPackage(script: string): Promise<FullVideoPackage> {
-  const model = "gemini-3-flash-preview";
-  
-  const prompt = `
-    You have been provided with this video script:
-    
-    "${script}"
-    
-    Generate a COMPLETE video package in JSON format. Return ONLY valid JSON (no markdown) with this structure:
-    {
-      "transcript": "Convert the script to a properly formatted transcript with [MM:SS] timestamps. Add timestamps every 45-60 seconds.",
-      "chapters": ["00:00 Intro - Hook and introduction", "01:15 Section 1 - First main topic", "02:45 Section 2 - Second main topic", "04:15 Section 3 - Third main topic", "05:45 Conclusion - Recap and CTA"],
-      "summary": "Write a 3-4 paragraph comprehensive summary suitable for a YouTube video description.",
-      "seoTitles": ["Title option 1 - Engaging and keyword-rich", "Title option 2 - Alternative angle", "Title option 3 - Question format"],
-      "seoDescription": "Write a compelling 150-160 character YouTube video description that includes the main topic and encourages clicks.",
-      "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],
-      "thumbnailConcepts": ["Concept 1: Bold text TOPIC with contrasting background colors", "Concept 2: Face reaction + Bold title text overlay", "Concept 3: Arrows pointing to key element with high contrast"],
-      "socialCaptions": {
-        "instagram": "Write an engaging Instagram caption with relevant hashtags (max 200 chars)",
-        "tiktok": "Write a catchy TikTok caption with trendy hashtags (max 150 chars)",
-        "twitter": "Write a tweet-style caption that's shareable (max 280 chars)",
-        "youtube": "Write a YouTube community post or short caption (max 500 chars)"
-      }
-    }
-    
-    Ensure all content is:
-    - Optimized for engagement and reach
-    - Uses relevant keywords naturally
-    - Maintains consistency with the script topic
-    - Platform-appropriate for each social media
-  `;
-
-  const response = await ai.models.generateContent({
-    model,
-    contents: [{ parts: [{ text: prompt }] }],
-    config: {
-      responseMimeType: "application/json",
-    },
-  });
-
-  try {
-    const result = JSON.parse(response.text || "{}");
-    return {
-      script: script,
-      transcript: result.transcript || "",
-      chapters: Array.isArray(result.chapters) ? result.chapters : [],
-      summary: result.summary || "",
-      seoTitles: Array.isArray(result.seoTitles) ? result.seoTitles : [],
-      seoDescription: result.seoDescription || "",
-      keywords: Array.isArray(result.keywords) ? result.keywords : [],
-      thumbnailConcepts: Array.isArray(result.thumbnailConcepts) ? result.thumbnailConcepts : [],
-      socialCaptions: {
-        instagram: result.socialCaptions?.instagram || "",
-        tiktok: result.socialCaptions?.tiktok || "",
-        twitter: result.socialCaptions?.twitter || "",
-        youtube: result.socialCaptions?.youtube || ""
-      }
-    };
-  } catch (error) {
-    console.error("Error parsing full video package:", error);
-    return {
-      script: script,
-      transcript: "",
-      chapters: [],
-      summary: "",
-      seoTitles: [],
-      seoDescription: "",
-      keywords: [],
-      thumbnailConcepts: [],
-      socialCaptions: {
-        instagram: "",
-        tiktok: "",
-        twitter: "",
-        youtube: ""
-      }
-    };
   }
 }

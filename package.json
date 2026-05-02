@@ -9,16 +9,22 @@
     "start": "tsx server.ts",
     "preview": "vite preview",
     "clean": "rimraf dist",
-    "lint": "tsc --noEmit"
+    "kill": "node ./scripts/stop-firebase-emulators.mjs",
+    "lint": "npm run lint:browser-storage && tsc --noEmit",
+    "lint:browser-storage": "node ./scripts/check-browser-storage.mjs",
+    "preemulators": "npm run kill",
+    "emulators": "firebase emulators:start --only auth,firestore,storage",
+    "emulators:restart": "npm run kill && firebase emulators:start --only auth,firestore,storage"
   },
   "dependencies": {
     "@distube/ytdl-core": "^4.16.12",
-    "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "busboy": "^1.4.0",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
+    "firebase": "^12.11.0",
+    "groq-sdk": "^1.1.2",
     "konva": "^10.2.3",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
@@ -36,10 +42,10 @@
     "@types/qs": "^6.15.0",
     "@types/react-reconciler": "^0.33.0",
     "autoprefixer": "^10.4.21",
+    "rimraf": "^5.0.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.0",
-    "rimraf": "^5.0.0"
+    "vite": "^6.2.0"
   }
 }
