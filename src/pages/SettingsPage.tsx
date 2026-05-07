@@ -18,6 +18,8 @@ import {
   Zap,
   FileText,
   Shield,
+  TriangleAlert,
+  Trash2,
   Users,
   HelpCircle,
   Clipboard,
@@ -42,12 +44,13 @@ import {
 const SettingsPage = () => {
   const [activeTab, setActiveTab] = useState<'general' | 'notifications' | 'ai' | 'privacy' | 'account'>('general');
   const [showAPIModal, setShowAPIModal] = useState(false);
-  const { user, signOut } = useAuth();
+  const [showDeleteAccountModal, setShowDeleteAccountModal] = useState(false);
+  const { user, signOut, deleteAccountData } = useAuth();
   const uid = user?.uid;
   const hasLoadedColdSettingsRef = useRef(false);
 
-  const [apiKeys, setApiKeys] = useState({ gemini: '', youtube: '' });
-  const [tempApiKeys, setTempApiKeys] = useState({ gemini: '', youtube: '' });
+  const [apiKeys, setApiKeys] = useState({ gemini: '', groq: '', youtube: '' });
+  const [tempApiKeys, setTempApiKeys] = useState({ gemini: '', groq: '', youtube: '' });
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
 
   const [saved, setSaved] = useState(false);
@@ -57,25 +60,56 @@ const SettingsPage = () => {
   const [pwVisible, setPwVisible] = useState(false);
   const [pwError, setPwError] = useState('');
   const [pwSuccess, setPwSuccess] = useState(false);
+  const [deleteConfirmValue, setDeleteConfirmValue] = useState('');
+  const [deleteAccountError, setDeleteAccountError] = useState('');
+  const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
   const navigate = useNavigate();
+
+  const deleteConfirmationTarget = user?.email?.trim() || user?.uid || '';
 
   const handleSignOut = async () => {
     await signOut();
     navigate('/login');
   };
 
+  const handleDeleteAccount = async () => {
+    if (!deleteConfirmationTarget) {
+      setDeleteAccountError('Missing account identifier. Sign in again and retry.');
+      return;
+    }
+
+    if (deleteConfirmValue.trim() !== deleteConfirmationTarget) {
+      setDeleteAccountError(`Type ${deleteConfirmationTarget} exactly to confirm.`);
+      return;
+    }
+
+    setDeleteAccountBusy(true);
+    setDeleteAccountError('');
+
+    try {
+      await deleteAccountData();
+      navigate('/login', { replace: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete account data.';
+      setDeleteAccountError(message);
+    } finally {
+      setDeleteAccountBusy(false);
+    }
+  };
+
   useEffect(() => {
     try {
       const nextApiKeys = {
         gemini: readUserScopedStorageValue('app_gemini_key', uid) || '',
+        groq: readUserScopedStorageValue('app_groq_key', uid) || '',
         youtube: readUserScopedStorageValue('app_youtube_key', uid) || '',
       };
       setApiKeys(nextApiKeys);
       setTempApiKeys(nextApiKeys);
     } catch (error) {
       console.warn('Failed to load API keys:', error);
-      setApiKeys({ gemini: '', youtube: '' });
-      setTempApiKeys({ gemini: '', youtube: '' });
+      setApiKeys({ gemini: '', groq: '', youtube: '' });
+      setTempApiKeys({ gemini: '', groq: '', youtube: '' });
     }
   }, [uid]);
 
@@ -143,6 +177,7 @@ const SettingsPage = () => {
 
   const saveAPIKeys = () => {
     writeUserScopedStorageValue('app_gemini_key', tempApiKeys.gemini, uid);
+    writeUserScopedStorageValue('app_groq_key', tempApiKeys.groq, uid);
     writeUserScopedStorageValue('app_youtube_key', tempApiKeys.youtube, uid);
     setApiKeys(tempApiKeys);
     setShowAPIModal(false);
@@ -415,6 +450,32 @@ const SettingsPage = () => {
                       ))}
                     </div>
                   </div>
+
+                  <div className="pt-6">
+                    <h3 className="text-sm font-semibold text-slate-300 mb-3">Thumbnail Assistant Provider</h3>
+                    <p className="text-xs text-slate-400 mb-4">Choose which model handles chat commands in the thumbnail editor.</p>
+                    <div className="space-y-2">
+                      {[
+                        { value: 'groq', label: 'Groq', desc: 'Fast command generation through the Groq API.' },
+                        { value: 'gemini', label: 'Gemini', desc: 'Gemini-based command generation for thumbnail edits.' },
+                      ].map((option) => (
+                        <label key={option.value} className="flex items-start gap-3 p-3 rounded-lg hover:bg-slate-800/50 cursor-pointer transition-colors border border-transparent hover:border-slate-700">
+                          <input
+                            type="radio"
+                            name="thumbnailAssistantProvider"
+                            value={option.value}
+                            checked={settings.ai.thumbnailAssistantProvider === option.value}
+                            onChange={(e) => updateSetting(['ai', 'thumbnailAssistantProvider'], e.target.value)}
+                            className="w-4 h-4 mt-0.5 accent-emerald-500"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-white">{option.label}</span>
+                            <p className="text-xs text-slate-400 mt-0.5">{option.desc}</p>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -522,6 +583,29 @@ const SettingsPage = () => {
                   </button>
 
                   <div className="mt-8 pt-8 border-t border-slate-700">
+                    <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 p-4">
+                      <div className="flex items-start gap-3">
+                        <TriangleAlert className="mt-0.5 h-5 w-5 text-red-300" />
+                        <div>
+                          <p className="font-semibold text-red-200">Delete Synced Data And Disable This Account</p>
+                          <p className="mt-1 text-sm text-red-100/80">
+                            This permanently deletes your Firebase profile, saved projects, and avatar storage for this UID. TubeFlow keeps only a minimal disabled-account record so the same account cannot claim a new free trial or reset credits later.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setDeleteConfirmValue('');
+                          setDeleteAccountError('');
+                          setShowDeleteAccountModal(true);
+                        }}
+                        className="mt-4 inline-flex items-center gap-2 rounded-lg border border-red-400/40 bg-red-500/20 px-4 py-2 text-sm font-semibold text-red-100 transition-colors hover:bg-red-500/30"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Delete Data And Disable Account
+                      </button>
+                    </div>
+
                     <button
                       onClick={handleSignOut}
                       className="w-full px-6 py-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 font-semibold hover:bg-red-500/20 transition-colors flex items-center justify-center gap-2"
@@ -583,6 +667,20 @@ const SettingsPage = () => {
                     className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white placeholder-slate-500 hover:border-slate-600 focus:border-emerald-500 focus:outline-none transition-colors"
                   />
                   <p className="text-xs text-slate-400 mt-1">Get your key from console.cloud.google.com</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-slate-300 mb-2">
+                    Groq API Key
+                  </label>
+                  <input
+                    type="password"
+                    value={tempApiKeys.groq}
+                    onChange={(e) => setTempApiKeys({ ...tempApiKeys, groq: e.target.value })}
+                    placeholder="Enter your Groq API key"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white placeholder-slate-500 hover:border-slate-600 focus:border-emerald-500 focus:outline-none transition-colors"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">Get your key from console.groq.com</p>
                 </div>
 
                 <div>
@@ -728,6 +826,88 @@ const SettingsPage = () => {
       </AnimatePresence>
 
       {/* Terms & Privacy Modal */}
+      <AnimatePresence>
+        {showDeleteAccountModal && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                if (!deleteAccountBusy) {
+                  setShowDeleteAccountModal(false);
+                }
+              }}
+              className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="fixed top-1/2 left-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-red-500/30 bg-slate-900 p-8 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-xl font-bold text-white">Delete Account Data</h3>
+                  <p className="mt-2 text-sm text-slate-300">
+                    This wipes all Firebase data tied to your current UID and signs you out. Authentication is retained but the account is disabled, so signing back in with the same email will not restore a free trial or fresh credits.
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    if (!deleteAccountBusy) {
+                      setShowDeleteAccountModal(false);
+                    }
+                  }}
+                  className="rounded-lg p-1 transition-colors hover:bg-slate-800"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="mt-6 rounded-lg border border-red-500/20 bg-red-500/5 p-4 text-sm text-red-100/90">
+                <p>Type <span className="font-mono font-semibold text-white">{deleteConfirmationTarget}</span> to confirm this permanent action.</p>
+              </div>
+
+              <label className="mt-5 block text-sm font-medium text-slate-200">
+                Confirmation
+                <input
+                  type="text"
+                  value={deleteConfirmValue}
+                  onChange={(event) => setDeleteConfirmValue(event.target.value)}
+                  disabled={deleteAccountBusy}
+                  className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 outline-none ring-2 ring-slate-900 focus:ring-red-500 disabled:cursor-not-allowed disabled:opacity-60"
+                  placeholder={deleteConfirmationTarget}
+                />
+              </label>
+
+              {deleteAccountError && (
+                <p className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                  {deleteAccountError}
+                </p>
+              )}
+
+              <div className="mt-6 flex gap-3">
+                <button
+                  onClick={() => setShowDeleteAccountModal(false)}
+                  disabled={deleteAccountBusy}
+                  className="flex-1 rounded-lg bg-slate-800 px-4 py-2 font-medium text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteAccount}
+                  disabled={deleteAccountBusy}
+                  className="flex-1 rounded-lg border border-red-400/40 bg-red-500 px-4 py-2 font-semibold text-white transition-colors hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {deleteAccountBusy ? 'Deleting…' : 'Delete Permanently'}
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {showTermsModal && (
           <>

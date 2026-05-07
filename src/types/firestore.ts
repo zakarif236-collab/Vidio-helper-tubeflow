@@ -20,6 +20,24 @@ export interface UserProfile {
   };
 }
 
+export interface DisabledUserRecord {
+  uid: string;
+  email: string;
+  displayName: string;
+  authRetention: 'firebase-auth-retained';
+  status: 'deleting' | 'disabled';
+  disabledAt: Timestamp;
+  dataPurgedAt?: Timestamp;
+}
+
+export interface MaintenanceConfigDocument {
+  isMaintenanceMode?: boolean;
+  title?: string;
+  subtitle?: string;
+  date?: string;
+  lastUpdatedAt?: Timestamp;
+}
+
 // ─── users/{userId}/projects/{projectId} ─────────────────────────────────────
 export interface Project {
   id: string;

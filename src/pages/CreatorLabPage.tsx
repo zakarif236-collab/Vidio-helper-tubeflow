@@ -1,7 +1,10 @@
 ﻿import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { auth } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { readUserScopedStorageValue } from '../services/browserStorage';
+import { loadSettings } from '../services/settingsService';
+import type { AppSettings } from '../services/appSettings';
 import {
   ArrowLeft,
   Type,
@@ -135,8 +138,15 @@ interface ChatMessage {
 }
 
 interface AICommand {
-  action: 'add-text' | 'add-shape' | 'delete' | 'change-background' | 'change-property' | 'clear-all' | 'apply-filter' | 'none';
+  action: 'add-text' | 'add-shape' | 'add-sticker' | 'add-photo-slot' | 'add-image' | 'delete' | 'change-background' | 'change-property' | 'clear-all' | 'apply-filter' | 'none';
   params?: Record<string, any>;
+}
+
+interface AICommandEnvelope {
+  action?: AICommand['action'];
+  params?: Record<string, any>;
+  commands?: AICommand[];
+  explanation?: string;
 }
 
 interface InlineTextEditorState {
@@ -149,6 +159,8 @@ interface InlineTextEditorDimensions {
   height: number;
 }
 
+type ThumbnailAssistantProvider = AppSettings['ai']['thumbnailAssistantProvider'];
+
 const EMOJI_FONT_FALLBACK = '"Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
 const DEFAULT_TEXT_FONT_FAMILY = `Arial, ${EMOJI_FONT_FALLBACK}`;
 
@@ -160,6 +172,89 @@ function withEmojiFontFallback(fontFamily?: string) {
   }
 
   return `${baseFont}, ${EMOJI_FONT_FALLBACK}`;
+}
+
+function buildThumbnailAssistantPrompt() {
+  return `You are an AI assistant helping users design YouTube thumbnails in a canvas editor. You MUST respond with ONLY a valid JSON object — no prose, no markdown, no explanation outside the JSON.
+
+Available actions:
+1. add-text — params: { text, fontSize (number), color (hex), fontFamily }
+2. add-shape — params: { shapeType ("rect"|"circle"|"star"|"triangle"), color (hex), size (number) }
+3. add-sticker — params: { emoji, color (hex), size (number) }
+4. add-photo-slot — params: { label, size (number), color (hex), accentColor (hex) }
+5. add-image — params: { source ("uploaded-background"|"url"), src?, width?, height?, x?, y?, fit? }
+6. delete — no params (removes selected element)
+7. change-background — params: { type: "solid", color (hex) }
+8. change-property — params: { [property]: value } applied to selected element
+9. clear-all — no params
+10. apply-filter — params: { filter: "fortnite"|"cartoon"|"3d"|"neon"|"noir"|"anime"|"cinematic"|"vaporwave"|"realistic" }
+11. none — when no canvas action is needed
+
+Response format (STRICT — only output JSON, nothing else):
+Single action:
+{"action":"<action>","params":{},"explanation":"<one short friendly sentence>"}
+
+Multi-step layout:
+{"commands":[{"action":"<action>","params":{}},{"action":"<action>","params":{}}],"explanation":"<one short friendly sentence>"}
+
+Examples:
+User: add a red circle -> {"action":"add-shape","params":{"shapeType":"circle","color":"#FF0000","size":150},"explanation":"Added a red circle to the canvas!"}
+User: add bold text saying AMAZING -> {"action":"add-text","params":{"text":"AMAZING","fontSize":72,"color":"#FFFFFF","fontWeight":"bold"},"explanation":"Added bold white text saying AMAZING!"}
+User: space background -> {"action":"change-background","params":{"type":"solid","color":"#0a0a2e"},"explanation":"Changed background to a deep space blue!"}
+User: add a spaceship -> {"action":"add-shape","params":{"shapeType":"star","color":"#C0C0C0","size":150},"explanation":"Added a silver star shape to represent a spaceship!"}
+User: add a vehicle -> {"action":"add-shape","params":{"shapeType":"rect","color":"#222222","size":200},"explanation":"Added a dark rectangle to represent a vehicle!"}
+User: add a fire emoji sticker -> {"action":"add-sticker","params":{"emoji":"🔥","color":"#FFFFFF","size":96},"explanation":"Added a fire sticker to the canvas!"}
+User: add a photo placeholder -> {"action":"add-photo-slot","params":{"label":"YOUR PHOTO","size":280,"color":"#1F2937","accentColor":"#FFFFFF"},"explanation":"Added a photo slot placeholder to the canvas!"}
+User: use the uploaded image on the right -> {"action":"add-image","params":{"source":"uploaded-background","width":420,"height":420,"x":780,"y":150,"fit":"cover"},"explanation":"Placed the uploaded image on the canvas!"}
+User: make a full layout with the uploaded image, a big title, and a fire badge -> {"commands":[{"action":"add-image","params":{"source":"uploaded-background","width":420,"height":420,"x":760,"y":130}},{"action":"add-text","params":{"text":"INSANE RESULTS","fontSize":112,"color":"#FFFFFF","x":60,"y":120}},{"action":"add-sticker","params":{"emoji":"🔥","size":110,"x":1040,"y":70}}],"explanation":"Built a full thumbnail layout with image, headline, and badge!"}
+User: add fortnite filter -> {"action":"apply-filter","params":{"filter":"fortnite"},"explanation":"Applied the Fortnite look with punchy gaming colors!"}
+User: make this cartoon -> {"action":"apply-filter","params":{"filter":"cartoon"},"explanation":"Applied a cartoon-style filter with bright comic contrast!"}
+User: make it anime -> {"action":"apply-filter","params":{"filter":"anime"},"explanation":"Applied an anime-style look with bold cel-shaded contrast!"}
+User: make this cinematic -> {"action":"apply-filter","params":{"filter":"cinematic"},"explanation":"Applied a cinematic filter with dramatic contrast and film-style depth!"}
+
+Rules:
+- NEVER write prose outside the JSON
+- For space/galaxy, use dark colors like #0a0a2e, #110022, #000010
+- When the user asks for a look, style, filter, vibe, or aesthetic that matches fortnite/cartoon/3d/neon/noir/anime/cinematic/vaporwave/realistic, prefer apply-filter
+- When the user asks for emojis, stickers, arrows, badges, fire, explosions, check marks, or reactions, prefer add-sticker
+- When the user asks for a subject cutout, portrait, face cam, product image, or photo area, prefer add-photo-slot
+- When the user asks to use the uploaded image, uploaded photo, current background image, product photo, or place an existing image on the canvas, prefer add-image with source "uploaded-background"
+- When the user asks for multiple changes in one request, prefer a commands array and order the steps logically
+- Default text color is #FFFFFF, default shape size is 150`;
+}
+
+async function requestThumbnailCommand(
+  provider: ThumbnailAssistantProvider,
+  systemPrompt: string,
+  userMessage: string,
+): Promise<string> {
+  const currentUser = auth.currentUser;
+  const idToken = currentUser ? await currentUser.getIdToken() : null;
+  const apiKey = provider === 'gemini'
+    ? (currentUser ? readUserScopedStorageValue('app_gemini_key', currentUser.uid) : null)
+    : (currentUser ? readUserScopedStorageValue('app_groq_key', currentUser.uid) : null);
+
+  const response = await fetch('/api/thumbnail-assistant', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+    },
+    body: JSON.stringify({
+      provider,
+      systemPrompt,
+      userMessage,
+      apiKey,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    throw new Error(errorData?.userMessage || errorData?.error || 'Thumbnail assistant request failed.');
+  }
+
+  const data = await response.json();
+  return data?.content || '';
 }
 
 const FILTER_PRESETS: FilterPreset[] = [
@@ -1007,6 +1102,7 @@ const CreatorLabPage = () => {
 
   // Chat State
   const [showChat, setShowChat] = useState(false);
+  const [thumbnailAssistantProvider, setThumbnailAssistantProvider] = useState<ThumbnailAssistantProvider>('groq');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
@@ -1021,6 +1117,24 @@ const CreatorLabPage = () => {
   const inlineEditingElement = inlineTextEditor
     ? elements.find((element) => element.id === inlineTextEditor.id && element.type === 'text')
     : null;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void loadSettings(uid)
+      .then((settings) => {
+        if (!cancelled) {
+          setThumbnailAssistantProvider(settings.ai.thumbnailAssistantProvider);
+        }
+      })
+      .catch((error) => {
+        console.warn('Failed to load thumbnail assistant provider:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [uid]);
 
   // Canvas resizing
   useEffect(() => {
@@ -1205,6 +1319,127 @@ const CreatorLabPage = () => {
         break;
       }
 
+      case 'add-sticker': {
+        const newElement: CanvasElement = {
+          id: generateId(),
+          type: 'icon',
+          x: (params?.x) || Math.random() * Math.max(canvasWidth - 180, 120),
+          y: (params?.y) || Math.random() * Math.max(canvasHeight - 180, 120),
+          width: params?.size || 96,
+          height: params?.size || 96,
+          rotation: params?.rotation || 0,
+          scaleX: 1,
+          scaleY: 1,
+          text: params?.emoji || params?.text || '🔥',
+          fontSize: params?.size || 96,
+          fontFamily: withEmojiFontFallback(params?.fontFamily || DEFAULT_TEXT_FONT_FAMILY),
+          fontWeight: 'bold',
+          fill: params?.color || '#FFFFFF',
+          opacity: 1,
+          visible: true,
+          locked: false,
+          shadowColor: params?.shadowColor || '#000000',
+          shadowBlur: params?.shadowBlur || 10,
+          shadowOpacity: params?.shadowOpacity || 0.35,
+          shadowOffsetX: params?.shadowOffsetX || 2,
+          shadowOffsetY: params?.shadowOffsetY || 2,
+        };
+        setElements((prev) => [...prev, newElement]);
+        setSelectedId(newElement.id);
+        showNotification('Sticker added!');
+        break;
+      }
+
+      case 'add-photo-slot': {
+        const slotSize = params?.size || 280;
+        const slotX = (params?.x) || Math.random() * Math.max(canvasWidth - slotSize - 40, 80);
+        const slotY = (params?.y) || Math.random() * Math.max(canvasHeight - slotSize - 40, 80);
+        const baseId = generateId();
+        const frameElement: CanvasElement = {
+          id: `${baseId}-frame`,
+          type: 'shape',
+          x: slotX,
+          y: slotY,
+          width: slotSize,
+          height: slotSize,
+          rotation: 0,
+          scaleX: 1,
+          scaleY: 1,
+          fill: params?.color || '#1F2937',
+          opacity: 0.88,
+          visible: true,
+          locked: false,
+          shapeType: 'rect',
+          shadowColor: '#000000',
+          shadowBlur: 12,
+          shadowOpacity: 0.3,
+          shadowOffsetX: 4,
+          shadowOffsetY: 4,
+        };
+        const labelElement: CanvasElement = {
+          id: `${baseId}-label`,
+          type: 'text',
+          x: slotX + 24,
+          y: slotY + slotSize / 2 - 24,
+          width: slotSize - 48,
+          height: 48,
+          rotation: 0,
+          scaleX: 1,
+          scaleY: 1,
+          text: params?.label || 'YOUR PHOTO',
+          fontSize: Math.max(24, Math.round(slotSize / 7)),
+          fontFamily: withEmojiFontFallback('Impact'),
+          fontWeight: 'bold',
+          fill: params?.accentColor || '#FFFFFF',
+          opacity: 0.75,
+          visible: true,
+          locked: false,
+        };
+        setElements((prev) => [...prev, frameElement, labelElement]);
+        setSelectedId(frameElement.id);
+        showNotification('Photo slot added!');
+        break;
+      }
+
+      case 'add-image': {
+        const sourceImage = typeof params?.src === 'string' && params.src.trim()
+          ? params.src.trim()
+          : background.imageSrc;
+
+        if (!sourceImage) {
+          showNotification('Upload an image first so I can place it on the canvas.', 'info');
+          break;
+        }
+
+        const width = params?.width || 360;
+        const height = params?.height || 360;
+        const newElement: CanvasElement = {
+          id: generateId(),
+          type: 'image',
+          x: params?.x || Math.random() * Math.max(canvasWidth - width - 24, 24),
+          y: params?.y || Math.random() * Math.max(canvasHeight - height - 24, 24),
+          width,
+          height,
+          rotation: params?.rotation || 0,
+          scaleX: 1,
+          scaleY: 1,
+          fill: '#000000',
+          opacity: 1,
+          visible: true,
+          locked: false,
+          src: sourceImage,
+          shadowColor: '#000000',
+          shadowBlur: 10,
+          shadowOpacity: 0.25,
+          shadowOffsetX: 4,
+          shadowOffsetY: 4,
+        };
+        setElements((prev) => [...prev, newElement]);
+        setSelectedId(newElement.id);
+        showNotification('Image added!');
+        break;
+      }
+
       case 'delete': {
         if (selectedId) {
           setElements((prev) => prev.filter((el) => el.id !== selectedId));
@@ -1256,14 +1491,20 @@ const CreatorLabPage = () => {
     setIsAIProcessing(true);
 
     try {
-      const apiKey = readUserScopedStorageValue('app_groq_key', uid) || import.meta.env.VITE_GROQ_API_KEY;
+      const provider = thumbnailAssistantProvider;
+      const apiKey = provider === 'gemini'
+        ? readUserScopedStorageValue('app_gemini_key', uid)
+        : readUserScopedStorageValue('app_groq_key', uid);
+
       if (!apiKey) {
         setChatMessages((prev) => [
           ...prev,
           {
             id: generateId(),
             role: 'assistant',
-            content: 'I need a Groq API key to help you. Get one free at console.groq.com, then add it in Settings > Privacy > API Keys.',
+            content: provider === 'gemini'
+              ? 'I need a Gemini API key to help you. Add it in Settings > Privacy > API Keys.'
+              : 'I need a Groq API key to help you. Add it in Settings > Privacy > API Keys.',
             timestamp: Date.now(),
           },
         ]);
@@ -1271,77 +1512,25 @@ const CreatorLabPage = () => {
         return;
       }
 
-      const systemPrompt = `You are an AI assistant helping users design YouTube thumbnails in a canvas editor. You MUST respond with ONLY a valid JSON object — no prose, no markdown, no explanation outside the JSON.
-
-Available actions:
-1. add-text — params: { text, fontSize (number), color (hex), fontFamily }
-2. add-shape — params: { shapeType ("rect"|"circle"|"star"|"triangle"), color (hex), size (number) }
-3. delete — no params (removes selected element)
-4. change-background — params: { type: "solid", color (hex) }
-5. change-property — params: { [property]: value } applied to selected element
-6. clear-all — no params
-7. apply-filter — params: { filter: "fortnite"|"cartoon"|"3d"|"neon"|"noir"|"anime"|"cinematic"|"vaporwave"|"realistic" }
-8. none — when no canvas action is needed
-
-Response format (STRICT — only output this JSON, nothing else):
-{"action":"<action>","params":{},"explanation":"<one short friendly sentence>"}
-
-Examples:
-User: add a red circle -> {"action":"add-shape","params":{"shapeType":"circle","color":"#FF0000","size":150},"explanation":"Added a red circle to the canvas!"}
-User: add bold text saying AMAZING -> {"action":"add-text","params":{"text":"AMAZING","fontSize":72,"color":"#FFFFFF","fontWeight":"bold"},"explanation":"Added bold white text saying AMAZING!"}
-User: space background -> {"action":"change-background","params":{"type":"solid","color":"#0a0a2e"},"explanation":"Changed background to a deep space blue!"}
-User: add a spaceship -> {"action":"add-shape","params":{"shapeType":"star","color":"#C0C0C0","size":150},"explanation":"Added a silver star shape to represent a spaceship!"}
-User: add a vehicle -> {"action":"add-shape","params":{"shapeType":"rect","color":"#222222","size":200},"explanation":"Added a dark rectangle to represent a vehicle!"}
-User: add fortnite filter -> {"action":"apply-filter","params":{"filter":"fortnite"},"explanation":"Applied the Fortnite look with punchy gaming colors!"}
-User: make this cartoon -> {"action":"apply-filter","params":{"filter":"cartoon"},"explanation":"Applied a cartoon-style filter with bright comic contrast!"}
-User: make it anime -> {"action":"apply-filter","params":{"filter":"anime"},"explanation":"Applied an anime-style look with bold cel-shaded contrast!"}
-User: make this cinematic -> {"action":"apply-filter","params":{"filter":"cinematic"},"explanation":"Applied a cinematic filter with dramatic contrast and film-style depth!"}
-
-Rules:
-- NEVER write prose outside the JSON
-- For space/galaxy, use dark colors like #0a0a2e, #110022, #000010
-- When the user asks for a look, style, filter, vibe, or aesthetic that matches fortnite/cartoon/3d/neon/noir/anime/cinematic/vaporwave/realistic, prefer apply-filter
-- Default text color is #FFFFFF, default shape size is 150`;
-
-      // Groq API — free tier, 14,400 req/day, llama-3.3-70b
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          temperature: 0.1,
-          response_format: { type: 'json_object' },
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userMessage },
-          ],
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`API Error: ${errorData.error?.message || 'Unknown error'}`);
-      }
-
-      const data = await response.json();
-
-      const aiResponse = (data.choices?.[0]?.message?.content as string | undefined);
+      const systemPrompt = buildThumbnailAssistantPrompt();
+      const aiResponse = await requestThumbnailCommand(provider, systemPrompt, userMessage);
 
       if (!aiResponse) {
-        throw new Error('No response from AI. Check your API key or quota.');
+        throw new Error(`No response from ${provider === 'gemini' ? 'Gemini' : 'Groq'}. Check your API key or quota.`);
       }
 
-      let parsedCommand: AICommand = { action: 'none' };
+      let parsedCommands: AICommand[] = [{ action: 'none' }];
       let explanation = aiResponse;
 
       try {
         const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
-          parsedCommand = parsed;
+          const parsed = JSON.parse(jsonMatch[0]) as AICommandEnvelope;
+          if (Array.isArray(parsed.commands) && parsed.commands.length > 0) {
+            parsedCommands = parsed.commands;
+          } else if (parsed.action) {
+            parsedCommands = [{ action: parsed.action, params: parsed.params }];
+          }
           explanation = parsed.explanation || aiResponse;
         }
       } catch (e) {
@@ -1349,36 +1538,78 @@ Rules:
       }
 
       // Fallback: if AI ignored JSON format, parse keywords from plain text
-      if (parsedCommand.action === 'none') {
+      if (parsedCommands.every((command) => command.action === 'none')) {
         const msg = userMessage.toLowerCase();
         const resp = aiResponse.toLowerCase();
         const combined = msg + ' ' + resp;
-        if (/add.*text|write|title|heading|label/.test(combined)) {
+        if (/uploaded image|uploaded photo|current background image|use the image|place the image|product photo|put the photo|use uploaded/.test(combined)
+          && /add.*text|write|title|heading|label/.test(combined)
+          && /sticker|emoji|badge|arrow|reaction|fire|explosion|spark|check mark|checkmark/.test(combined)) {
           const textMatch = userMessage.match(/(?:saying|text|write|titled?)\s+["']?([A-Za-z0-9 !?]+)["']?/i);
-          parsedCommand = { action: 'add-text', params: { text: textMatch?.[1] || 'TEXT', fontSize: 72, color: '#FFFFFF', fontWeight: 'bold' } };
+          parsedCommands = [
+            { action: 'add-image', params: { source: 'uploaded-background', width: 420, height: 420, x: 760, y: 130 } },
+            { action: 'add-text', params: { text: textMatch?.[1] || 'BIG TITLE', fontSize: 112, color: '#FFFFFF', x: 60, y: 120, fontWeight: 'bold' } },
+            { action: 'add-sticker', params: { emoji: '🔥', size: 110, x: 1040, y: 70, color: '#FFFFFF' } },
+          ];
+          explanation = explanation || 'Built a full thumbnail layout with image, headline, and badge!';
+        } else if (/add.*text|write|title|heading|label/.test(combined)) {
+          const textMatch = userMessage.match(/(?:saying|text|write|titled?)\s+["']?([A-Za-z0-9 !?]+)["']?/i);
+          parsedCommands = [{ action: 'add-text', params: { text: textMatch?.[1] || 'TEXT', fontSize: 72, color: '#FFFFFF', fontWeight: 'bold' } }];
           explanation = explanation || 'Added text to the canvas!';
         } else if (/add.*star|spaceship|space ship|rocket/.test(combined)) {
-          parsedCommand = { action: 'add-shape', params: { shapeType: 'star', color: '#C0C0C0', size: 150 } };
+          parsedCommands = [{ action: 'add-shape', params: { shapeType: 'star', color: '#C0C0C0', size: 150 } }];
           explanation = explanation || 'Added a star shape to the canvas!';
+        } else if (/sticker|emoji|badge|arrow|reaction|fire|explosion|spark|check mark|checkmark/.test(combined)) {
+          const emojiMap: Record<string, string> = {
+            arrow: '➡️',
+            fire: '🔥',
+            explosion: '💥',
+            spark: '✨',
+            reaction: '😱',
+            badge: '✅',
+            check: '✅',
+          };
+          let emoji = '🔥';
+          for (const [keyword, nextEmoji] of Object.entries(emojiMap)) {
+            if (combined.includes(keyword)) {
+              emoji = nextEmoji;
+              break;
+            }
+          }
+          parsedCommands = [{ action: 'add-sticker', params: { emoji, size: 96, color: '#FFFFFF' } }];
+          explanation = explanation || 'Added a sticker to the canvas!';
+        } else if (/uploaded image|uploaded photo|current background image|use the image|place the image|product photo|put the photo|use uploaded/.test(combined)) {
+          parsedCommands = [{
+            action: 'add-image',
+            params: {
+              source: 'uploaded-background',
+              width: 420,
+              height: 420,
+            },
+          }];
+          explanation = explanation || 'Placed the uploaded image on the canvas!';
+        } else if (/photo|portrait|face cam|facecam|product image|image placeholder|cutout|subject/.test(combined)) {
+          parsedCommands = [{ action: 'add-photo-slot', params: { label: 'YOUR PHOTO', size: 280, color: '#1F2937', accentColor: '#FFFFFF' } }];
+          explanation = explanation || 'Added a photo slot placeholder to the canvas!';
         } else if (/add.*circle|round/.test(combined)) {
-          parsedCommand = { action: 'add-shape', params: { shapeType: 'circle', color: '#FF5555', size: 150 } };
+          parsedCommands = [{ action: 'add-shape', params: { shapeType: 'circle', color: '#FF5555', size: 150 } }];
           explanation = explanation || 'Added a circle to the canvas!';
         } else if (/add.*rect|square|box|vehicle|car|truck/.test(combined)) {
-          parsedCommand = { action: 'add-shape', params: { shapeType: 'rect', color: '#333333', size: 200 } };
+          parsedCommands = [{ action: 'add-shape', params: { shapeType: 'rect', color: '#333333', size: 200 } }];
           explanation = explanation || 'Added a rectangle to the canvas!';
         } else if (/add.*triangle/.test(combined)) {
-          parsedCommand = { action: 'add-shape', params: { shapeType: 'triangle', color: '#FFaa00', size: 150 } };
+          parsedCommands = [{ action: 'add-shape', params: { shapeType: 'triangle', color: '#FFaa00', size: 150 } }];
           explanation = explanation || 'Added a triangle to the canvas!';
         } else if (/background|bg/.test(combined)) {
           const colorMap: Record<string, string> = { space: '#0a0a2e', red: '#8B0000', blue: '#003366', black: '#000000', white: '#FFFFFF', green: '#003300', purple: '#1a0030', dark: '#111111' };
           let color = '#1a1a1a';
           for (const [k, v] of Object.entries(colorMap)) { if (combined.includes(k)) { color = v; break; } }
-          parsedCommand = { action: 'change-background', params: { type: 'solid', color } };
+          parsedCommands = [{ action: 'change-background', params: { type: 'solid', color } }];
           explanation = explanation || 'Changed the background!';
         } else {
           const filterId = resolveFilterPresetId(combined);
           if (filterId) {
-            parsedCommand = { action: 'apply-filter', params: { filter: filterId } };
+            parsedCommands = [{ action: 'apply-filter', params: { filter: filterId } }];
             explanation = explanation || `Applied the ${FILTER_PRESET_LOOKUP[filterId].name} filter!`;
           }
         }
@@ -1394,8 +1625,9 @@ Rules:
         },
       ]);
 
-      if (parsedCommand.action !== 'none') {
-        executeCommand(parsedCommand);
+      const executableCommands = parsedCommands.filter((command) => command.action !== 'none');
+      if (executableCommands.length > 0) {
+        executableCommands.forEach((command) => executeCommand(command));
       }
     } catch (error) {
       console.error('AI Error:', error);
@@ -1742,6 +1974,36 @@ Rules:
           draggable={!element.locked}
           onClick={() => startInlineTextEditing(element)}
           onTap={() => startInlineTextEditing(element)}
+          onDragEnd={(e) => {
+            updateElement(element.id, { x: e.target.x(), y: e.target.y() });
+          }}
+        />
+      );
+    }
+
+    if (element.type === 'icon') {
+      return (
+        <KonvaText
+          key={element.id}
+          x={element.x}
+          y={element.y}
+          width={element.width}
+          height={element.height}
+          text={element.text}
+          align="center"
+          verticalAlign="middle"
+          fontSize={element.fontSize}
+          fontFamily={withEmojiFontFallback(element.fontFamily)}
+          fontStyle={element.fontWeight}
+          fill={element.fill}
+          opacity={element.opacity}
+          rotation={element.rotation}
+          scaleX={element.scaleX}
+          scaleY={element.scaleY}
+          {...getShadowProps(element)}
+          draggable={!element.locked}
+          onClick={() => setSelectedId(element.id)}
+          onTap={() => setSelectedId(element.id)}
           onDragEnd={(e) => {
             updateElement(element.id, { x: e.target.x(), y: e.target.y() });
           }}

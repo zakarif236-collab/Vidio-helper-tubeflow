@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import PrivateRoute from './components/PrivateRoute';
+import MaintenanceGate from './components/MaintenanceGate';
 import LoginPage from './pages/LoginPage';
 import SignUpPage from './pages/SignUpPage';
 import StudioPage from './pages/StudioPage';
@@ -31,25 +32,27 @@ createRoot(document.getElementById('root')!).render(
     <BrowserRouter>
       <ScrollToTop />
       <AuthProvider>
-        <Routes>
-          <Route path="/" element={<StudioPage />} />
-          <Route path="/home" element={<Navigate to="/" replace />} />
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/signup" element={<SignUpPage />} />
-          <Route path="/studio" element={<Navigate to="/" replace />} />
-          <Route path="/idea-to-video" element={<Navigate to="/" replace />} />
-          <Route path="/settings" element={<PrivateRoute><SettingsPage /></PrivateRoute>} />
-          <Route path="/creator-lab" element={<PrivateRoute><CreatorLabPage /></PrivateRoute>} />
-          <Route path="/tools" element={<Navigate to="/" replace />} />
-          <Route path="/tools/auto-chapters" element={<Navigate to="/" replace />} />
-          <Route path="/tools/ai-summary" element={<Navigate to="/" replace />} />
-          <Route path="/tools/topic-detector" element={<Navigate to="/" replace />} />
-          <Route path="/tools/highlight-finder" element={<Navigate to="/" replace />} />
-          <Route path="/tools/seo-generator" element={<Navigate to="/" replace />} />
-          <Route path="/tools/transcript-gen" element={<Navigate to="/" replace />} />
-          <Route path="/tools/social-captions" element={<Navigate to="/" replace />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        <MaintenanceGate>
+          <Routes>
+            <Route path="/" element={<StudioPage />} />
+            <Route path="/home" element={<Navigate to="/" replace />} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/signup" element={<SignUpPage />} />
+            <Route path="/studio" element={<Navigate to="/" replace />} />
+            <Route path="/idea-to-video" element={<Navigate to="/" replace />} />
+            <Route path="/settings" element={<PrivateRoute><SettingsPage /></PrivateRoute>} />
+            <Route path="/creator-lab" element={<PrivateRoute><CreatorLabPage /></PrivateRoute>} />
+            <Route path="/tools" element={<Navigate to="/" replace />} />
+            <Route path="/tools/auto-chapters" element={<Navigate to="/" replace />} />
+            <Route path="/tools/ai-summary" element={<Navigate to="/" replace />} />
+            <Route path="/tools/topic-detector" element={<Navigate to="/" replace />} />
+            <Route path="/tools/highlight-finder" element={<Navigate to="/" replace />} />
+            <Route path="/tools/seo-generator" element={<Navigate to="/" replace />} />
+            <Route path="/tools/transcript-gen" element={<Navigate to="/" replace />} />
+            <Route path="/tools/social-captions" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </MaintenanceGate>
       </AuthProvider>
     </BrowserRouter>
   </StrictMode>,

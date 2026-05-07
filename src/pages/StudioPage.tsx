@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Youtube,
@@ -30,9 +30,12 @@ import {
   ChevronRight,
   ChevronDown,
   TrendingUp,
+  FolderOpen,
+  GripVertical,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { generateIdeaDraft, IdeaDraftResponse, processYouTubeUrl, processUploadedScript, ProcessingResult } from '../services/geminiService';
+import { applyPatternToScript, generateIdeaDraft, IdeaDraftResponse, processYouTubeUrl, processUploadedScript, ProcessingResult } from '../services/geminiService';
+import { buildDefaultPatternName, createSavedPattern, listSavedPatterns, type SavedPattern, updateSavedPattern } from '../services/patternService';
 import { saveProject, updateProject } from '../services/projectService';
 import { getUserScopedStorageKey, readBrowserStorageValue, writeBrowserStorageValue } from '../services/browserStorage';
 import { getUserScopedDownloadName } from '../services/userPaths';
@@ -73,6 +76,95 @@ interface DerivedStudioResults {
   layeredArchitecture: ArchitectureLayer[];
 }
 
+type ResultPanelKey = 'transcript' | 'chapters' | 'layers' | 'style-profile' | 'summary' | 'highlights' | 'seo' | 'captions';
+
+interface ResultPanelProps {
+  title: string;
+  icon: ReactNode;
+  subtitle?: string;
+  className?: string;
+  collapsible?: boolean;
+  isOpen: boolean;
+  onToggle: () => void;
+  copyText?: string;
+  copyField?: string;
+  copied: string | null;
+  onCopy?: (text: string, field: string) => void;
+  children: ReactNode;
+  panelRef?: Ref<HTMLDivElement>;
+}
+
+function ResultPanel({
+  title,
+  icon,
+  subtitle,
+  className,
+  collapsible = true,
+  isOpen,
+  onToggle,
+  copyText,
+  copyField,
+  copied,
+  onCopy,
+  children,
+  panelRef,
+}: ResultPanelProps) {
+  const showContent = collapsible ? isOpen : true;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={`studio-card studio-result-card rounded-2xl p-6 ${className ?? ''}`}
+      ref={panelRef}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <button
+          type="button"
+          onClick={collapsible ? onToggle : undefined}
+          className={`flex flex-1 items-start gap-3 text-left ${collapsible ? '' : 'cursor-default'}`}
+        >
+          <div className="mt-0.5">{icon}</div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2.5">
+              <h3 className="text-base font-bold text-white">{title}</h3>
+              {collapsible && (
+                <ChevronDown className={`h-4 w-4 text-slate-400 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
+              )}
+            </div>
+            {subtitle && (
+              <p className="mt-2 text-xs text-slate-400">{subtitle}</p>
+            )}
+          </div>
+        </button>
+        {copyText && copyField && onCopy && showContent && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onCopy(copyText, copyField);
+            }}
+            className={`studio-copy-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+              copied === copyField
+                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                : 'border border-white/8 bg-white/5 text-slate-400 hover:text-white hover:bg-white/10'
+            }`}
+          >
+            {copied === copyField ? (
+              <><Check className="w-3.5 h-3.5" />Copied</>
+            ) : (
+              <><Copy className="w-3.5 h-3.5" />Copy</>
+            )}
+          </button>
+        )}
+      </div>
+      {showContent && (
+        <div className="mt-5">{children}</div>
+      )}
+    </motion.div>
+  );
+}
+
 const STOP_WORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from',
   'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
@@ -92,6 +184,7 @@ const SUPPORTED_SCRIPT_FILE_EXTENSIONS = new Set([
 
 const SCRIPT_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
 const SCRIPT_UPLOAD_ALLOWED_LABEL = 'TXT, MD, JSON, CSV, SRT, or VTT';
+const PATTERN_DRAG_MIME = 'application/x-tubeflow-pattern';
 
 function getFileExtension(fileName: string): string {
   const segments = fileName.toLowerCase().split('.');
@@ -117,6 +210,21 @@ function getScriptUploadError(file: File): string | null {
   }
 
   return null;
+}
+
+function formatPatternTimestamp(isoString: string): string {
+  const date = new Date(isoString);
+
+  if (Number.isNaN(date.getTime())) {
+    return 'Recently saved';
+  }
+
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
 const IDEA_SECTION_MINIMUMS = {
@@ -865,10 +973,18 @@ const StudioPage = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const analyticsKey = getUserScopedStorageKey(ANALYTICS_STORAGE_KEY_PREFIX, user?.uid);
+  const [isDesktopSplitLayout, setIsDesktopSplitLayout] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 1024);
+  const [editorPanelWidth, setEditorPanelWidth] = useState(42);
+  const [isResizingEditorPanel, setIsResizingEditorPanel] = useState(false);
   const [activeTab, setActiveTab] = useState<'youtube' | 'script'>('youtube');
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [scriptText, setScriptText] = useState('');
+  const [patterns, setPatterns] = useState<SavedPattern[]>([]);
+  const [patternStatus, setPatternStatus] = useState<string | null>(null);
+  const [patternDropActive, setPatternDropActive] = useState(false);
+  const [applyingPattern, setApplyingPattern] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [resultSource, setResultSource] = useState<'youtube' | 'script' | null>(null);
   const [results, setResults] = useState<ProcessingResult | null>(null);
   const [derivedResults, setDerivedResults] = useState<DerivedStudioResults | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -884,14 +1000,31 @@ const StudioPage = () => {
   const [analyticsStats, setAnalyticsStats] = useState({ generated: 0, exported: 0, shared: 0 });
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
   const [openPhases, setOpenPhases] = useState<string[]>(['introduction', 'development', 'climax', 'resolution']);
+  const [openResultPanels, setOpenResultPanels] = useState<ResultPanelKey[]>([]);
   const transcriptPanelRef = useRef<HTMLDivElement | null>(null);
   const [selectedStoryLayerId, setSelectedStoryLayerId] = useState<string | null>(null);
   const [selectedResultLayerId, setSelectedResultLayerId] = useState<string | null>(null);
   const [activeTranscriptTimestamp, setActiveTranscriptTimestamp] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedProjectId, setSavedProjectId] = useState<string | null>(null);
+  const [hasSavedYoutubePattern, setHasSavedYoutubePattern] = useState(false);
   const clickGuardTimersRef = useRef<Record<string, number>>({});
   const scriptFileInputRef = useRef<HTMLInputElement | null>(null);
+  const studioSplitPaneRef = useRef<HTMLDivElement | null>(null);
+  const resizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const handleSplitPaneResizeStart = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!isDesktopSplitLayout) {
+      return;
+    }
+
+    event.preventDefault();
+    resizeStateRef.current = {
+      startX: event.clientX,
+      startWidth: editorPanelWidth,
+    };
+    setIsResizingEditorPanel(true);
+  };
 
   useEffect(() => {
     try {
@@ -915,6 +1048,69 @@ const StudioPage = () => {
 
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    setPatterns(listSavedPatterns(user?.uid));
+  }, [user?.uid]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsDesktopSplitLayout(window.innerWidth >= 1024);
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    if (!isDesktopSplitLayout) {
+      setIsResizingEditorPanel(false);
+      resizeStateRef.current = null;
+    }
+  }, [isDesktopSplitLayout]);
+
+  useEffect(() => {
+    if (!isResizingEditorPanel) {
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const container = studioSplitPaneRef.current;
+      const resizeState = resizeStateRef.current;
+
+      if (!container || !resizeState) {
+        return;
+      }
+
+      const containerWidth = container.getBoundingClientRect().width;
+      if (containerWidth <= 0) {
+        return;
+      }
+
+      const deltaX = event.clientX - resizeState.startX;
+      const nextWidth = resizeState.startWidth + (deltaX / containerWidth) * 100;
+      setEditorPanelWidth(Math.max(28, Math.min(62, nextWidth)));
+    };
+
+    const handlePointerUp = () => {
+      setIsResizingEditorPanel(false);
+      resizeStateRef.current = null;
+      document.body.style.removeProperty('cursor');
+      document.body.style.removeProperty('user-select');
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      document.body.style.removeProperty('cursor');
+      document.body.style.removeProperty('user-select');
+    };
+  }, [isResizingEditorPanel]);
 
   useEffect(() => {
     if (!ideaDraftMeta) {
@@ -1013,6 +1209,119 @@ const StudioPage = () => {
     );
   };
 
+  const toggleResultPanel = (key: ResultPanelKey) => {
+    setOpenResultPanels((current) =>
+      current.includes(key) ? current.filter((panelKey) => panelKey !== key) : [...current, key]
+    );
+  };
+
+  const savePatternFromContent = (content: string, source: SavedPattern['source']): SavedPattern | null => {
+    const normalizedContent = content.trim();
+
+    if (!normalizedContent) {
+      return null;
+    }
+
+    const savedPattern = createSavedPattern(user?.uid, {
+      content: normalizedContent,
+      source,
+      name: buildDefaultPatternName(source),
+    });
+
+    setPatterns((current) => [savedPattern, ...current]);
+    setPatternStatus(`Saved to Patterns as ${savedPattern.name}.`);
+    window.setTimeout(() => setPatternStatus(null), 2500);
+    return savedPattern;
+  };
+
+  const handleSaveYoutubePattern = () => {
+    if (!results?.Transcript.trim()) {
+      setError('There is no transcript to save as a pattern yet.');
+      return;
+    }
+
+    const savedPattern = savePatternFromContent(results.Transcript, 'youtube');
+    if (savedPattern) {
+      setHasSavedYoutubePattern(true);
+      setError('');
+    }
+  };
+
+  const handlePatternRename = (patternId: string, nextName: string) => {
+    setPatterns(updateSavedPattern(user?.uid, patternId, { name: nextName }));
+  };
+
+  const handlePatternTagsChange = (patternId: string, rawTags: string) => {
+    setPatterns(updateSavedPattern(
+      user?.uid,
+      patternId,
+      { tags: rawTags.split(',').map((tag) => tag.trim()).filter(Boolean) },
+    ));
+  };
+
+  const handlePatternDragStart = (event: React.DragEvent<HTMLDivElement>, pattern: SavedPattern) => {
+    event.dataTransfer.effectAllowed = 'copy';
+    event.dataTransfer.setData(PATTERN_DRAG_MIME, pattern.content);
+    event.dataTransfer.setData('text/plain', pattern.content);
+  };
+
+  const handlePatternEditorDragOver = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    if (!Array.from(event.dataTransfer.types).includes(PATTERN_DRAG_MIME)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setPatternDropActive(true);
+  };
+
+  const handlePatternEditorDrop = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    event.preventDefault();
+    const droppedPattern = event.dataTransfer.getData(PATTERN_DRAG_MIME);
+
+    if (!droppedPattern.trim()) {
+      setPatternDropActive(false);
+      return;
+    }
+
+    const trimmedPattern = droppedPattern.trim();
+    const trimmedCurrent = scriptText.trim();
+
+    if (!trimmedCurrent) {
+      setScriptText(trimmedPattern);
+      setPatternStatus('Pattern copied into the editor. Add your own draft first to apply the pattern logic automatically.');
+      window.setTimeout(() => setPatternStatus(null), 3000);
+      setPatternDropActive(false);
+      setError('');
+      return;
+    }
+
+    setPatternDropActive(false);
+    setApplyingPattern(true);
+    setPatternStatus('Applying pattern logic to your draft...');
+    setError('');
+
+    void applyPatternToScript(trimmedPattern, trimmedCurrent)
+      .then((result) => {
+        const improvedScript = result.script.trim();
+        if (!improvedScript) {
+          throw new Error('The improved script came back empty. Please try again.');
+        }
+
+        setScriptText(improvedScript);
+        setPatternStatus('Pattern logic applied to your draft.');
+        window.setTimeout(() => setPatternStatus(null), 3000);
+      })
+      .catch((err) => {
+        console.error('Error applying dropped pattern:', err);
+        setPatternStatus(null);
+        setError(err instanceof Error ? err.message : 'We could not apply that pattern right now. Please try again in a moment.');
+      })
+      .finally(() => {
+        setApplyingPattern(false);
+      });
+  };
+
   const tryStartClickGuard = (key: string, delay = 500) => {
     if (clickGuardTimersRef.current[key] !== undefined) {
       return false;
@@ -1046,10 +1355,13 @@ const StudioPage = () => {
   const storyboardLayers = ideaDraftMeta ? buildIdeaStoryboardLayers(ideaDraftMeta) : [];
   const activeStoryboardLayer = storyboardLayers.find((layer) => layer.id === selectedStoryLayerId) ?? storyboardLayers[0] ?? null;
   const activeResultLayer = derivedResults?.layeredArchitecture.find((layer) => layer.id === selectedResultLayerId) ?? derivedResults?.layeredArchitecture[0] ?? null;
+  const youtubePatterns = patterns.filter((pattern) => pattern.source === 'youtube');
+  const collapseGeneratedResults = resultSource === 'youtube';
   const storyProgressPercent = activeStoryboardLayer && ideaDraftMeta
     ? Math.min(96, Math.max(4, (parseTimestampToSeconds(activeStoryboardLayer.timestamp) / ((ideaDraftMeta.sections.targetMinutes || 15) * 60)) * 100))
     : 4;
   const errorDisplay = error ? getErrorDisplay(error) : null;
+  const isYoutubeResult = resultSource === 'youtube';
 
   const handleProcessYouTube = async () => {
     if (!youtubeUrl.trim()) {
@@ -1063,8 +1375,11 @@ const StudioPage = () => {
 
     setLoading(true);
     setError('');
+    setHasSavedYoutubePattern(false);
     try {
       const result = await processYouTubeUrl(youtubeUrl);
+      setResultSource('youtube');
+      setOpenResultPanels([]);
       setResults(result);
       setDerivedResults(buildDerivedResults(result));
       trackAnalytics('generated');
@@ -1091,6 +1406,8 @@ const StudioPage = () => {
     setError('');
     try {
       const result = await processUploadedScript(scriptText);
+      setResultSource('script');
+      setOpenResultPanels([]);
       setResults(result);
       setDerivedResults(buildDerivedResults(result));
       trackAnalytics('generated');
@@ -1135,6 +1452,7 @@ const StudioPage = () => {
 
   const handleCleanGeneratedContent = () => {
     setScriptText('');
+    setResultSource(null);
     setResults(null);
     setDerivedResults(null);
     setIdeaDraftMeta(null);
@@ -1144,9 +1462,12 @@ const StudioPage = () => {
     setSelectedStoryLayerId(null);
     setSelectedResultLayerId(null);
     setActiveTranscriptTimestamp(null);
+    setOpenResultPanels([]);
+    setPatternDropActive(false);
     setCopied(null);
     setError('');
     setSavedProjectId(null);
+    setHasSavedYoutubePattern(false);
   };
 
   const handleGenerateIdeaDraft = async (platformOverride?: 'youtube' | 'tiktok') => {
@@ -1184,8 +1505,10 @@ const StudioPage = () => {
       setIdeaSections(normalizedDraft.sections);
       setScriptText(normalizedDraft.draft);
       setOpenPhases(['introduction', 'development', 'climax', 'resolution']);
+      setResultSource(null);
       setResults(null);
       setDerivedResults(null);
+      setOpenResultPanels([]);
       setSelectedPresetId(null);
       trackAnalytics('generated');
     } catch (err) {
@@ -1360,9 +1683,9 @@ const StudioPage = () => {
         <div className="flex gap-1 mb-8 bg-white/[0.03] border border-white/8 rounded-2xl p-1.5 w-fit">
           <button
             onClick={() => setIsIdeaModalOpen(true)}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all border border-blue-500/35 bg-gradient-to-r from-blue-600/30 to-slate-950/80 text-blue-200 hover:border-blue-400/55 hover:from-blue-500/35 hover:to-black"
+            className="idea-led-button flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all border border-blue-500/35 bg-gradient-to-r from-blue-600/30 to-slate-950/80 text-blue-200 hover:border-blue-400/55 hover:from-blue-500/35 hover:to-black"
           >
-            <Lightbulb className="w-4 h-4" />
+            <Lightbulb className="idea-lamp-icon w-4 h-4" />
             ✨ Idea
           </button>
           <button
@@ -1389,22 +1712,23 @@ const StudioPage = () => {
           </button>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+        <div ref={studioSplitPaneRef} className="mb-8 flex flex-col gap-6 lg:flex-row lg:items-start lg:gap-0">
           {/* Input Section */}
           <motion.div
             initial={{ opacity: 0, x: -24 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.45 }}
-            className="lg:col-span-1 h-fit"
+            className="h-fit w-full lg:shrink-0"
+            style={isDesktopSplitLayout ? { flexBasis: `${editorPanelWidth}%` } : undefined}
           >
             <div className="studio-card rounded-2xl p-6">
               <div className="mb-5 rounded-2xl border border-white/10 bg-white/[0.02] p-4">
                 <h2 className="text-sm font-bold flex items-center gap-2 uppercase tracking-widest text-slate-300">
                   <Upload className="w-4 h-4 text-emerald-400" />
-                  Input
+                    Creative Launchpad
                 </h2>
                 <p className="mt-2 text-xs leading-relaxed text-slate-400">
-                  Idea in. Full YouTube + TikTok video package out. Keep everything in one clean flow.
+                    Start with a spark, a link, or a script. TubeFlow turns it into a full YouTube + TikTok package in one clean flow.
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-emerald-300">Script</span>
@@ -1467,6 +1791,7 @@ const StudioPage = () => {
                       <button
                         type="button"
                         onClick={() => scriptFileInputRef.current?.click()}
+                        disabled={applyingPattern}
                         className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-slate-300 transition-colors hover:bg-white/[0.08] hover:text-white"
                       >
                         <Upload className="w-3.5 h-3.5" />
@@ -1479,12 +1804,83 @@ const StudioPage = () => {
                       value={scriptText}
                       onChange={(e) => setScriptText(e.target.value)}
                       placeholder="Paste your script or text here..."
-                      className="w-full h-64 px-4 py-3 bg-black/40 border border-white/10 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/70 transition-colors resize-none"
+                      disabled={applyingPattern}
+                      onDragOver={handlePatternEditorDragOver}
+                      onDragLeave={() => setPatternDropActive(false)}
+                      onDrop={handlePatternEditorDrop}
+                      className={`w-full min-h-[22rem] px-4 py-3 bg-black/40 border rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none transition-colors resize-y ${
+                        patternDropActive
+                          ? 'border-cyan-400/70 shadow-[0_0_0_1px_rgba(34,211,238,0.35)]'
+                          : 'border-white/10 focus:border-emerald-500/70'
+                      }`}
                     />
                   </div>
                   <p className="mt-3 text-xs text-slate-500">
-                    Use ✨ Idea to turn a short concept into an editable YouTube or TikTok draft, then refine it here.
+                    {applyingPattern
+                      ? 'Applying the dropped pattern logic to your draft now. This rewrites the current script instead of appending the pattern text.'
+                      : 'Use ✨ Idea to turn a short concept into an editable YouTube or TikTok draft, then refine it here. Saved patterns below only come from the YouTube URL workflow.'}
                   </p>
+                  <div className="mt-4 rounded-2xl border border-cyan-500/20 bg-gradient-to-br from-cyan-500/10 to-slate-950/90 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                          <FolderOpen className="w-4 h-4 text-cyan-300" />
+                          YouTube Patterns Folder
+                        </h3>
+                        <p className="mt-2 text-xs text-slate-400">
+                          Save a pattern from a YouTube URL result, rename it, add tags, then drag it into the editor above when you want to reuse that structure.
+                        </p>
+                      </div>
+                      <span className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-cyan-300">
+                        {youtubePatterns.length} saved
+                      </span>
+                    </div>
+                    {patternStatus && (
+                      <p className="mt-3 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+                        {patternStatus}
+                      </p>
+                    )}
+                    <div className="mt-4 space-y-3 max-h-72 overflow-y-auto pr-1">
+                      {youtubePatterns.length > 0 ? youtubePatterns.map((pattern) => (
+                        <div
+                          key={pattern.id}
+                          draggable
+                          onDragStart={(event) => handlePatternDragStart(event, pattern)}
+                          className="rounded-xl border border-white/10 bg-black/20 p-3 transition-colors hover:border-cyan-400/30 hover:bg-black/30"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2 text-cyan-200">
+                              <GripVertical className="w-4 h-4" />
+                              <span className="text-xs font-semibold uppercase tracking-[0.2em]">Drag Pattern</span>
+                            </div>
+                            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                              {pattern.source}
+                            </span>
+                          </div>
+                          <input
+                            value={pattern.name}
+                            onChange={(event) => handlePatternRename(pattern.id, event.target.value)}
+                            className="mt-3 w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-white outline-none transition-colors focus:border-cyan-400/50"
+                            placeholder="Pattern name"
+                          />
+                          <input
+                            value={pattern.tags.join(', ')}
+                            onChange={(event) => handlePatternTagsChange(pattern.id, event.target.value)}
+                            className="mt-2 w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300 outline-none transition-colors focus:border-cyan-400/50"
+                            placeholder="Tags, separated, by commas"
+                          />
+                          <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-slate-400">
+                            <span>Updated {formatPatternTimestamp(pattern.updatedAt)}</span>
+                            <span>{pattern.content.split(/\s+/).filter(Boolean).length} words</span>
+                          </div>
+                        </div>
+                      )) : (
+                        <div className="rounded-xl border border-dashed border-white/10 bg-black/20 px-4 py-5 text-xs text-slate-500">
+                          No YouTube patterns saved yet. Process a YouTube URL, then use the result screen to save that transcript as a reusable pattern.
+                        </div>
+                      )}
+                    </div>
+                  </div>
                   {ideaDraftMeta && (
                     <div className="mt-4 rounded-2xl border border-amber-500/20 bg-gradient-to-br from-amber-500/8 to-yellow-500/5 p-4">
                       <div className="flex items-center justify-between gap-3">
@@ -1585,13 +1981,13 @@ const StudioPage = () => {
                   <div className="mt-4 flex gap-3">
                     <button
                       onClick={handleProcessScript}
-                      disabled={loading}
+                      disabled={loading || applyingPattern}
                       className="flex-1 px-4 py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 disabled:from-slate-700 disabled:to-slate-700 text-white font-bold rounded-xl transition-all shadow-lg shadow-emerald-500/20 disabled:shadow-none flex items-center justify-center gap-2"
                     >
-                      {loading ? (
+                      {loading || applyingPattern ? (
                         <>
                           <Loader2 className="w-4 h-4 animate-spin" />
-                          Processing...
+                          {applyingPattern ? 'Applying Pattern...' : 'Processing...'}
                         </>
                       ) : (
                         <>
@@ -1641,36 +2037,28 @@ const StudioPage = () => {
                 </div>
               )}
 
-              <div className="mt-6 rounded-2xl border border-white/6 bg-black/20 p-4">
-                <h3 className="text-xs font-bold text-slate-500 mb-3 uppercase tracking-widest">Included tools</h3>
-                <div className="flex flex-wrap gap-1.5">
-                  {[
-                    { label: 'Transcript',     color: 'border-blue-500/30 bg-blue-500/10 text-blue-300' },
-                    { label: 'Chapters',       color: 'border-purple-500/30 bg-purple-500/10 text-purple-300' },
-                    { label: 'AI Summary',     color: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' },
-                    { label: 'Highlights',     color: 'border-amber-500/30 bg-amber-500/10 text-amber-300' },
-                    { label: 'SEO',            color: 'border-green-500/30 bg-green-500/10 text-green-300' },
-                    { label: 'Social Captions',color: 'border-violet-500/30 bg-violet-500/10 text-violet-300' },
-                    { label: 'Layered Architecture', color: 'border-slate-500/30 bg-slate-500/10 text-slate-200' },
-                  ].map((tool) => (
-                    <span key={tool.label} className={`studio-tool-badge border ${tool.color}`}>
-                      {tool.label}
-                    </span>
-                  ))}
-                </div>
-                <p className="mt-3 text-[11px] text-slate-500">
-                  One click can turn your concept into organized creator assets.
-                </p>
-              </div>
             </div>
           </motion.div>
+
+          <button
+            type="button"
+            onPointerDown={handleSplitPaneResizeStart}
+            aria-label="Resize editor panel"
+            className={`group hidden lg:flex lg:w-4 lg:shrink-0 lg:items-stretch lg:justify-center ${isResizingEditorPanel ? 'cursor-col-resize' : 'cursor-ew-resize'}`}
+          >
+            <span className="flex w-full items-center justify-center">
+              <span className={`flex h-full min-h-[24rem] w-2 items-center justify-center rounded-full border border-white/10 bg-white/[0.03] text-slate-500 transition-colors ${isResizingEditorPanel ? 'border-cyan-400/40 bg-cyan-500/10 text-cyan-300' : 'group-hover:border-cyan-400/30 group-hover:bg-cyan-500/5 group-hover:text-cyan-200'}`}>
+                <GripVertical className="h-4 w-4" />
+              </span>
+            </span>
+          </button>
 
           {/* Results Section */}
           <motion.div
             initial={{ opacity: 0, x: 24 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.45 }}
-            className="lg:col-span-2"
+            className="min-w-0 flex-1"
           >
             {activeTab === 'script' && ideaDraftMeta && (
               <motion.div
@@ -1865,43 +2253,45 @@ const StudioPage = () => {
                     Analytics hooks: {analyticsStats.generated} generated • {analyticsStats.exported} exported • {analyticsStats.shared} shared
                   </div>
 
-                  <div className="flex flex-wrap gap-2 justify-end">
-                    <button
-                      onClick={shareDraft}
-                      className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${copied === 'share-draft'
-                        ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
-                        : 'bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 text-white'}`}
-                    >
-                      <Share2 className="w-3.5 h-3.5" />
-                      {copied === 'share-draft' ? 'Shared payload copied' : 'Share Draft'}
-                    </button>
-                    <button
-                      onClick={() => exportDraftBundle('youtube')}
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 rounded-xl text-sm font-semibold text-white transition-all"
-                    >
-                      <Upload className="w-3.5 h-3.5" />
-                      YouTube Studio
-                    </button>
-                    <button
-                      onClick={() => exportDraftBundle('tiktok')}
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 rounded-xl text-sm font-semibold text-white transition-all"
-                    >
-                      <Upload className="w-3.5 h-3.5" />
-                      TikTok
-                    </button>
-                    <button
-                      onClick={() => exportDraftBundle('reels')}
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 rounded-xl text-sm font-semibold text-white transition-all"
-                    >
-                      <Upload className="w-3.5 h-3.5" />
-                      Instagram Reels
-                    </button>
-                  </div>
+                  {!isYoutubeResult && (
+                    <div className="flex flex-wrap gap-2 justify-end">
+                      <button
+                        onClick={shareDraft}
+                        className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${copied === 'share-draft'
+                          ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
+                          : 'bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 text-white'}`}
+                      >
+                        <Share2 className="w-3.5 h-3.5" />
+                        {copied === 'share-draft' ? 'Shared payload copied' : 'Share Draft'}
+                      </button>
+                      <button
+                        onClick={() => exportDraftBundle('youtube')}
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 rounded-xl text-sm font-semibold text-white transition-all"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        YouTube Studio
+                      </button>
+                      <button
+                        onClick={() => exportDraftBundle('tiktok')}
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 rounded-xl text-sm font-semibold text-white transition-all"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        TikTok
+                      </button>
+                      <button
+                        onClick={() => exportDraftBundle('reels')}
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 rounded-xl text-sm font-semibold text-white transition-all"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        Instagram Reels
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Download + Save Buttons */}
                 <div className="flex gap-2 justify-end flex-wrap">
-                  {user && (
+                  {!isYoutubeResult && user && (
                     <button
                       onClick={handleSaveProject}
                       disabled={saving}
@@ -1927,6 +2317,23 @@ const StudioPage = () => {
                     <Download className="w-3.5 h-3.5" />
                     Download JSON
                   </button>
+                  {isYoutubeResult && (
+                    <button
+                      onClick={handleSaveYoutubePattern}
+                      disabled={hasSavedYoutubePattern}
+                      className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
+                        hasSavedYoutubePattern
+                          ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
+                          : 'bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 text-white'
+                      }`}
+                    >
+                      {hasSavedYoutubePattern ? (
+                        <><Check className="w-3.5 h-3.5" />Saved Pattern</>
+                      ) : (
+                        <><FolderOpen className="w-3.5 h-3.5" />Save Pattern</>
+                      )}
+                    </button>
+                  )}
                   <button
                     onClick={downloadTranscript}
                     className="inline-flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 rounded-xl text-sm font-semibold text-white transition-all"
@@ -1936,61 +2343,87 @@ const StudioPage = () => {
                   </button>
                 </div>
 
-                {/* Live Preview of Assets */}
-                {derivedResults && (
-                  <div className="rounded-2xl border border-cyan-500/20 bg-gradient-to-br from-cyan-500/10 to-slate-950/90 p-5">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-300">Before Publish Preview</p>
-                    <div className="mt-3 grid gap-3 md:grid-cols-3">
-                      <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                        <p className="text-xs font-semibold text-white">Chapter view</p>
-                        <div className="mt-2 space-y-1.5">
-                          {results.Chapters.slice(0, 3).map((chapter) => (
-                            <p key={chapter.id} className="text-[11px] text-slate-300">• {chapter.timestamp} {chapter.title}</p>
-                          ))}
-                        </div>
+                <div className="grid gap-6 xl:grid-cols-2 xl:items-start">
+                  <div className="rounded-2xl border border-white/6 bg-black/20 p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Included tools</h3>
+                        <p className="mt-2 text-xs leading-relaxed text-slate-400">
+                          Keep the generated assets together so the workspace stays dense and easier to scan.
+                        </p>
                       </div>
-                      <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                        <p className="text-xs font-semibold text-white">SEO snippet</p>
-                        <p className="mt-2 text-[11px] font-semibold text-cyan-200">{derivedResults.seo.title}</p>
-                        <p className="mt-1 text-[11px] text-slate-300 leading-relaxed">{derivedResults.seo.description.slice(0, 110)}...</p>
-                      </div>
-                      <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                        <p className="text-xs font-semibold text-white">Caption card</p>
-                        <p className="mt-2 text-[11px] text-slate-300 leading-relaxed">{derivedResults.socialCaptions[0]}</p>
+                      <div className="rounded-full border border-cyan-500/20 bg-cyan-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-cyan-300">
+                        Organized
                       </div>
                     </div>
+                    <div className="mt-4 flex flex-wrap gap-1.5">
+                      {[
+                        { label: 'Transcript', color: 'border-blue-500/30 bg-blue-500/10 text-blue-300' },
+                        { label: 'Chapters', color: 'border-purple-500/30 bg-purple-500/10 text-purple-300' },
+                        { label: 'AI Summary', color: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' },
+                        { label: 'Highlights', color: 'border-amber-500/30 bg-amber-500/10 text-amber-300' },
+                        { label: 'SEO', color: 'border-green-500/30 bg-green-500/10 text-green-300' },
+                        { label: 'Social Captions', color: 'border-violet-500/30 bg-violet-500/10 text-violet-300' },
+                        { label: 'Layered Architecture', color: 'border-slate-500/30 bg-slate-500/10 text-slate-200' },
+                        ...(activeTab === 'script'
+                          ? [{ label: 'YouTube Patterns', color: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300' }]
+                          : []),
+                      ].map((tool) => (
+                        <span key={tool.label} className={`studio-tool-badge border ${tool.color}`}>
+                          {tool.label}
+                        </span>
+                      ))}
+                    </div>
+                    <p className="mt-4 text-[11px] text-slate-500 leading-relaxed">
+                      {activeTab === 'script'
+                        ? 'Save reusable YouTube patterns from result cards, rename them, tag them, then drag them back into the editor when you want the same structure again.'
+                        : 'One click can turn your concept into organized creator assets.'}
+                    </p>
                   </div>
-                )}
+
+                  {derivedResults && (
+                    <div className="rounded-2xl border border-cyan-500/20 bg-gradient-to-br from-cyan-500/10 to-slate-950/90 p-5">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-300">Before Publish Preview</p>
+                      <div className="mt-3 grid gap-3 md:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3">
+                        <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                          <p className="text-xs font-semibold text-white">Chapter view</p>
+                          <div className="mt-2 space-y-1.5">
+                            {results.Chapters.slice(0, 3).map((chapter) => (
+                              <p key={chapter.id} className="text-[11px] text-slate-300">• {chapter.timestamp} {chapter.title}</p>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                          <p className="text-xs font-semibold text-white">SEO snippet</p>
+                          <p className="mt-2 text-[11px] font-semibold text-cyan-200">{derivedResults.seo.title}</p>
+                          <p className="mt-1 text-[11px] text-slate-300 leading-relaxed">{derivedResults.seo.description.slice(0, 110)}...</p>
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                          <p className="text-xs font-semibold text-white">Caption card</p>
+                          <p className="mt-2 text-[11px] text-slate-300 leading-relaxed">{derivedResults.socialCaptions[0]}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                 {/* Transcript */}
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="studio-card studio-result-card rounded-2xl p-6"
-                  ref={transcriptPanelRef}
+                <ResultPanel
+                  className="xl:col-span-2"
+                  title="Transcript"
+                  icon={(
+                    <div className="w-8 h-8 rounded-lg bg-blue-500/15 border border-blue-500/25 flex items-center justify-center">
+                      <MessageSquare className="w-4 h-4 text-blue-400" />
+                    </div>
+                  )}
+                  collapsible={collapseGeneratedResults}
+                  isOpen={openResultPanels.includes('transcript')}
+                  onToggle={() => toggleResultPanel('transcript')}
+                  copyText={results.Transcript}
+                  copyField="transcript"
+                  copied={copied}
+                  onCopy={copyToClipboard}
+                  panelRef={transcriptPanelRef}
                 >
-                  <div className="flex items-center justify-between mb-5">
-                    <h3 className="text-base font-bold flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-blue-500/15 border border-blue-500/25 flex items-center justify-center">
-                        <MessageSquare className="w-4 h-4 text-blue-400" />
-                      </div>
-                      Transcript
-                    </h3>
-                    <button
-                      onClick={() => copyToClipboard(results.Transcript, 'transcript')}
-                      className={`studio-copy-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                        copied === 'transcript'
-                          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                          : 'border border-white/8 bg-white/5 text-slate-400 hover:text-white hover:bg-white/10'
-                      }`}
-                    >
-                      {copied === 'transcript' ? (
-                        <><Check className="w-3.5 h-3.5" />Copied</>
-                      ) : (
-                        <><Copy className="w-3.5 h-3.5" />Copy</>
-                      )}
-                    </button>
-                  </div>
                   <div className="bg-black/30 border border-white/5 rounded-xl p-4 max-h-64 overflow-y-auto space-y-2">
                     {getTranscriptSegments(results.Transcript).map((segment, index) => {
                       const isActive = Boolean(activeTranscriptTimestamp) && segment.includes(activeTranscriptTimestamp);
@@ -2009,36 +2442,24 @@ const StudioPage = () => {
                       );
                     })}
                   </div>
-                </motion.div>
+                </ResultPanel>
 
                 {/* Chapters */}
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="studio-card studio-result-card rounded-2xl p-6"
+                <ResultPanel
+                  title="Chapters"
+                  icon={(
+                    <div className="w-8 h-8 rounded-lg bg-purple-500/15 border border-purple-500/25 flex items-center justify-center">
+                      <FileText className="w-4 h-4 text-purple-400" />
+                    </div>
+                  )}
+                  collapsible={collapseGeneratedResults}
+                  isOpen={openResultPanels.includes('chapters')}
+                  onToggle={() => toggleResultPanel('chapters')}
+                  copyText={results.Chapters.map((ch) => `${ch.timestamp} ${ch.title}`).join('\n')}
+                  copyField="chapters"
+                  copied={copied}
+                  onCopy={copyToClipboard}
                 >
-                  <div className="flex items-center justify-between mb-5">
-                    <h3 className="text-base font-bold flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-purple-500/15 border border-purple-500/25 flex items-center justify-center">
-                        <FileText className="w-4 h-4 text-purple-400" />
-                      </div>
-                      Chapters
-                    </h3>
-                    <button
-                      onClick={() => copyToClipboard(results.Chapters.map((ch) => `${ch.timestamp} ${ch.title}`).join('\n'), 'chapters')}
-                      className={`studio-copy-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                        copied === 'chapters'
-                          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                          : 'border border-white/8 bg-white/5 text-slate-400 hover:text-white hover:bg-white/10'
-                      }`}
-                    >
-                      {copied === 'chapters' ? (
-                        <><Check className="w-3.5 h-3.5" />Copied</>
-                      ) : (
-                        <><Copy className="w-3.5 h-3.5" />Copy</>
-                      )}
-                    </button>
-                  </div>
                   <div className="space-y-2">
                     {results.Chapters.map((chapter, idx) => (
                       <div
@@ -2058,40 +2479,27 @@ const StudioPage = () => {
                       </div>
                     ))}
                   </div>
-                </motion.div>
+                </ResultPanel>
 
                 {/* Layered Architecture */}
                 {derivedResults && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="studio-card studio-result-card rounded-2xl p-6"
-                  >
-                    <div className="flex items-center justify-between mb-5">
-                      <div>
-                        <h3 className="text-base font-bold flex items-center gap-2.5">
-                          <div className="w-8 h-8 rounded-lg bg-slate-500/15 border border-slate-500/25 flex items-center justify-center">
-                            <Layers className="w-4 h-4 text-slate-200" />
-                          </div>
-                          Layered Architecture
-                        </h3>
-                        <p className="mt-2 text-xs text-slate-400">Each layer now carries its own content, dependency links, and transcript jump target.</p>
+                  <ResultPanel
+                    className="xl:col-span-2"
+                    title="Layered Architecture"
+                    icon={(
+                      <div className="w-8 h-8 rounded-lg bg-slate-500/15 border border-slate-500/25 flex items-center justify-center">
+                        <Layers className="w-4 h-4 text-slate-200" />
                       </div>
-                      <button
-                        onClick={() => copyToClipboard(JSON.stringify(derivedResults.layeredArchitecture, null, 2), 'layers')}
-                        className={`studio-copy-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                          copied === 'layers'
-                            ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                            : 'border border-white/8 bg-white/5 text-slate-400 hover:text-white hover:bg-white/10'
-                        }`}
-                      >
-                        {copied === 'layers' ? (
-                          <><Check className="w-3.5 h-3.5" />Copied</>
-                        ) : (
-                          <><Copy className="w-3.5 h-3.5" />Copy JSON</>
-                        )}
-                      </button>
-                    </div>
+                    )}
+                    collapsible={collapseGeneratedResults}
+                    subtitle="Each layer now carries its own content, dependency links, and transcript jump target."
+                    isOpen={openResultPanels.includes('layers')}
+                    onToggle={() => toggleResultPanel('layers')}
+                    copyText={JSON.stringify(derivedResults.layeredArchitecture, null, 2)}
+                    copyField="layers"
+                    copied={copied}
+                    onCopy={copyToClipboard}
+                  >
                     <div className="grid gap-4 lg:grid-cols-[1.05fr_0.95fr]">
                       <div className="space-y-3">
                         {derivedResults.layeredArchitecture.map((item) => (
@@ -2163,73 +2571,74 @@ const StudioPage = () => {
                         </div>
                       )}
                     </div>
-                  </motion.div>
+                  </ResultPanel>
+                )}
+
+                {results.styleProfile && (
+                  <ResultPanel
+                    title="Source Style Profile"
+                    icon={(
+                      <div className="w-8 h-8 rounded-lg bg-cyan-500/15 border border-cyan-500/25 flex items-center justify-center">
+                        <Bot className="w-4 h-4 text-cyan-300" />
+                      </div>
+                    )}
+                    collapsible={collapseGeneratedResults}
+                    subtitle={results.sourceTitle ? `Learned from: ${results.sourceTitle}` : undefined}
+                    isOpen={openResultPanels.includes('style-profile')}
+                    onToggle={() => toggleResultPanel('style-profile')}
+                    copyText={results.styleProfile}
+                    copyField="style-profile"
+                    copied={copied}
+                    onCopy={copyToClipboard}
+                  >
+                    <div className="rounded-xl border border-cyan-500/10 bg-gradient-to-br from-cyan-950/25 to-black/20 p-4">
+                      <p className="text-sm whitespace-pre-wrap text-slate-300 leading-relaxed">
+                        {results.styleProfile}
+                      </p>
+                    </div>
+                  </ResultPanel>
                 )}
 
                 {/* Summary */}
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="studio-card studio-result-card rounded-2xl p-6"
+                <ResultPanel
+                  title="AI Summary"
+                  icon={(
+                    <div className="w-8 h-8 rounded-lg bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center">
+                      <Sparkles className="w-4 h-4 text-emerald-400" />
+                    </div>
+                  )}
+                  collapsible={collapseGeneratedResults}
+                  isOpen={openResultPanels.includes('summary')}
+                  onToggle={() => toggleResultPanel('summary')}
+                  copyText={results.Summary}
+                  copyField="summary"
+                  copied={copied}
+                  onCopy={copyToClipboard}
                 >
-                  <div className="flex items-center justify-between mb-5">
-                    <h3 className="text-base font-bold flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center">
-                        <Sparkles className="w-4 h-4 text-emerald-400" />
-                      </div>
-                      AI Summary
-                    </h3>
-                    <button
-                      onClick={() => copyToClipboard(results.Summary, 'summary')}
-                      className={`studio-copy-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                        copied === 'summary'
-                          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                          : 'border border-white/8 bg-white/5 text-slate-400 hover:text-white hover:bg-white/10'
-                      }`}
-                    >
-                      {copied === 'summary' ? (
-                        <><Check className="w-3.5 h-3.5" />Copied</>
-                      ) : (
-                        <><Copy className="w-3.5 h-3.5" />Copy</>
-                      )}
-                    </button>
-                  </div>
                   <div className="bg-gradient-to-br from-emerald-950/30 to-black/20 border border-emerald-500/10 rounded-xl p-4">
                     <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">
                       {results.Summary}
                     </p>
                   </div>
-                </motion.div>
+                </ResultPanel>
 
                 {/* Highlights */}
                 {derivedResults && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="studio-card studio-result-card rounded-2xl p-6"
+                  <ResultPanel
+                    title="Highlight Finder"
+                    icon={(
+                      <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/25 flex items-center justify-center">
+                        <Target className="w-4 h-4 text-amber-400" />
+                      </div>
+                    )}
+                    collapsible={collapseGeneratedResults}
+                    isOpen={openResultPanels.includes('highlights')}
+                    onToggle={() => toggleResultPanel('highlights')}
+                    copyText={derivedResults.highlights.map((highlight) => `${highlight.timestamp} ${highlight.title}`).join('\n')}
+                    copyField="highlights"
+                    copied={copied}
+                    onCopy={copyToClipboard}
                   >
-                    <div className="flex items-center justify-between mb-5">
-                      <h3 className="text-base font-bold flex items-center gap-2.5">
-                        <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/25 flex items-center justify-center">
-                          <Target className="w-4 h-4 text-amber-400" />
-                        </div>
-                        Highlight Finder
-                      </h3>
-                      <button
-                        onClick={() => copyToClipboard(derivedResults.highlights.map((highlight) => `${highlight.timestamp} ${highlight.title}`).join('\n'), 'highlights')}
-                        className={`studio-copy-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                          copied === 'highlights'
-                            ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                            : 'border border-white/8 bg-white/5 text-slate-400 hover:text-white hover:bg-white/10'
-                        }`}
-                      >
-                        {copied === 'highlights' ? (
-                          <><Check className="w-3.5 h-3.5" />Copied</>
-                        ) : (
-                          <><Copy className="w-3.5 h-3.5" />Copy</>
-                        )}
-                      </button>
-                    </div>
                     <div className="space-y-3">
                       {derivedResults.highlights.map((highlight, idx) => (
                         <div key={`${highlight.timestamp}-${idx}`} className="rounded-xl bg-gradient-to-r from-amber-950/30 to-black/20 p-4 border border-amber-500/10 hover:border-amber-500/20 transition-colors">
@@ -2244,38 +2653,26 @@ const StudioPage = () => {
                         </div>
                       ))}
                     </div>
-                  </motion.div>
+                  </ResultPanel>
                 )}
 
                 {/* SEO */}
                 {derivedResults && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="studio-card studio-result-card rounded-2xl p-6"
+                  <ResultPanel
+                    title="SEO Pack"
+                    icon={(
+                      <div className="w-8 h-8 rounded-lg bg-green-500/15 border border-green-500/25 flex items-center justify-center">
+                        <Hash className="w-4 h-4 text-green-400" />
+                      </div>
+                    )}
+                    collapsible={collapseGeneratedResults}
+                    isOpen={openResultPanels.includes('seo')}
+                    onToggle={() => toggleResultPanel('seo')}
+                    copyText={`${derivedResults.seo.title}\n\n${derivedResults.seo.description}\n\n${derivedResults.seo.keywords.join(', ')}`}
+                    copyField="seo"
+                    copied={copied}
+                    onCopy={copyToClipboard}
                   >
-                    <div className="flex items-center justify-between mb-5">
-                      <h3 className="text-base font-bold flex items-center gap-2.5">
-                        <div className="w-8 h-8 rounded-lg bg-green-500/15 border border-green-500/25 flex items-center justify-center">
-                          <Hash className="w-4 h-4 text-green-400" />
-                        </div>
-                        SEO Pack
-                      </h3>
-                      <button
-                        onClick={() => copyToClipboard(`${derivedResults.seo.title}\n\n${derivedResults.seo.description}\n\n${derivedResults.seo.keywords.join(', ')}`, 'seo')}
-                        className={`studio-copy-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                          copied === 'seo'
-                            ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                            : 'border border-white/8 bg-white/5 text-slate-400 hover:text-white hover:bg-white/10'
-                        }`}
-                      >
-                        {copied === 'seo' ? (
-                          <><Check className="w-3.5 h-3.5" />Copied</>
-                        ) : (
-                          <><Copy className="w-3.5 h-3.5" />Copy</>
-                        )}
-                      </button>
-                    </div>
                     <div className="space-y-3">
                       <div className="rounded-xl bg-black/30 border border-white/5 p-4">
                         <p className="studio-chip-label text-green-500/70 mb-2">Title</p>
@@ -2296,38 +2693,26 @@ const StudioPage = () => {
                         </div>
                       </div>
                     </div>
-                  </motion.div>
+                  </ResultPanel>
                 )}
 
                 {/* Social Captions */}
                 {derivedResults && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="studio-card studio-result-card rounded-2xl p-6"
+                  <ResultPanel
+                    title="Social Captions"
+                    icon={(
+                      <div className="w-8 h-8 rounded-lg bg-violet-500/15 border border-violet-500/25 flex items-center justify-center">
+                        <Share2 className="w-4 h-4 text-violet-400" />
+                      </div>
+                    )}
+                    collapsible={collapseGeneratedResults}
+                    isOpen={openResultPanels.includes('captions')}
+                    onToggle={() => toggleResultPanel('captions')}
+                    copyText={derivedResults.socialCaptions.join('\n\n')}
+                    copyField="captions"
+                    copied={copied}
+                    onCopy={copyToClipboard}
                   >
-                    <div className="flex items-center justify-between mb-5">
-                      <h3 className="text-base font-bold flex items-center gap-2.5">
-                        <div className="w-8 h-8 rounded-lg bg-violet-500/15 border border-violet-500/25 flex items-center justify-center">
-                          <Share2 className="w-4 h-4 text-violet-400" />
-                        </div>
-                        Social Captions
-                      </h3>
-                      <button
-                        onClick={() => copyToClipboard(derivedResults.socialCaptions.join('\n\n'), 'captions')}
-                        className={`studio-copy-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                          copied === 'captions'
-                            ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                            : 'border border-white/8 bg-white/5 text-slate-400 hover:text-white hover:bg-white/10'
-                        }`}
-                      >
-                        {copied === 'captions' ? (
-                          <><Check className="w-3.5 h-3.5" />Copied</>
-                        ) : (
-                          <><Copy className="w-3.5 h-3.5" />Copy</>
-                        )}
-                      </button>
-                    </div>
                     <div className="space-y-3">
                       {derivedResults.socialCaptions.map((caption, idx) => (
                         <div key={idx} className="rounded-xl bg-gradient-to-br from-violet-950/25 to-black/20 border border-violet-500/10 hover:border-violet-500/20 transition-colors p-4">
@@ -2338,8 +2723,9 @@ const StudioPage = () => {
                         </div>
                       ))}
                     </div>
-                  </motion.div>
+                  </ResultPanel>
                 )}
+                </div>
               </div>
             ) : loading ? (
               <LoadingMiniGame message="Processing content…" color="emerald" />
@@ -2358,9 +2744,62 @@ const StudioPage = () => {
                   </h3>
                   <p className="text-slate-400 text-sm max-w-sm mx-auto leading-relaxed">
                     {activeTab === 'youtube'
-                      ? 'Paste one URL and let Tubeflow organize everything into transcript, chapters, highlights, and SEO in one run.'
-                      : 'Drop your draft and convert it into clean, publish-ready assets with one click.'}
+                      ? 'Paste a YouTube link and TubeFlow will read the script from that video, learn its pattern, and turn it into a reusable workflow for later drafts.'
+                      : 'Paste or upload your script, then click Process Script.'}
                   </p>
+                  {activeTab === 'youtube' ? (
+                    <div className="mx-auto mt-5 max-w-md rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-left">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-emerald-300">
+                        How it works
+                      </p>
+                      <div className="mt-3 space-y-2 text-sm leading-relaxed text-slate-300">
+                        <p>
+                          1. Paste a YouTube URL and TubeFlow reads the video script from that link.
+                        </p>
+                        <p>
+                          2. It generates a pattern from that script, so you can save the pattern if you want to keep it.
+                        </p>
+                        <p>
+                          3. Saved patterns go into your Patterns folder, and later you can drag one onto your own script to improve it with the same logic and structure.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mx-auto mt-5 max-w-2xl rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-left">
+                      <div className="grid gap-4 md:grid-cols-3">
+                        <div className="rounded-xl border border-white/8 bg-black/20 p-4">
+                          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-emerald-300">
+                            What to do here
+                          </p>
+                          <div className="mt-3 space-y-2 text-sm leading-relaxed text-slate-300">
+                            <p>1. Paste your script or upload a file.</p>
+                            <p>2. Add a pattern if you want a better flow.</p>
+                            <p>3. Click Process Script.</p>
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4">
+                          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-cyan-300">
+                            How patterns help
+                          </p>
+                          <div className="mt-3 space-y-2 text-sm leading-relaxed text-slate-300">
+                            <p>Patterns are saved script styles.</p>
+                            <p>They can improve your hook, flow, and transitions.</p>
+                            <p>You can save new ones from YouTube results.</p>
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4">
+                          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-violet-300">
+                            What processing unlocks
+                          </p>
+                          <div className="mt-3 space-y-2 text-sm leading-relaxed text-slate-300">
+                            <p>It opens the tools on the right.</p>
+                            <p>You get chapters, SEO, and captions.</p>
+                            <p>One script becomes a full content package.</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </motion.div>
             )}
@@ -2378,6 +2817,23 @@ const StudioPage = () => {
             <div>
               <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">Success stories</p>
               <h3 className="mt-1 text-xl font-bold text-white">Creators shipping faster with TubeFlow</h3>
+                  ) : (
+                    <div className="mx-auto mt-5 max-w-md rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-left">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-emerald-300">
+                        How script mode works
+                      </p>
+                      <div className="mt-3 space-y-2 text-sm leading-relaxed text-slate-300">
+                        <p>
+                          1. Paste text or upload a script file to give TubeFlow something to shape.
+                        </p>
+                        <p>
+                          2. If you already have a saved pattern, drag it from the Patterns folder onto the script box to apply that structure to your draft.
+                        </p>
+                        <p>
+                          3. New patterns are created from the YouTube URL workflow. Use that tab when you want TubeFlow to study a video and save its format for reuse here.
+                        </p>
+                      </div>
+                    </div>
             </div>
             <div className="flex items-center gap-2">
               <button

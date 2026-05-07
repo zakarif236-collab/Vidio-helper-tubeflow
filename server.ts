@@ -12,6 +12,10 @@ import fs from "fs/promises";
 import os from "os";
 import { processContent, addTimestampsToScript, buildIdeaScriptDraft } from "./contentProcessor.js";
 import ytdl from "@distube/ytdl-core";
+import { applicationDefault, cert, getApps as getAdminApps, initializeApp as initializeAdminApp } from "firebase-admin/app";
+import { getAuth as getAdminAuth, type DecodedIdToken } from "firebase-admin/auth";
+import { FieldValue, Timestamp, getFirestore as getAdminFirestore, type Firestore } from "firebase-admin/firestore";
+import { getStorage as getAdminStorage } from "firebase-admin/storage";
 
 interface IdeaDraftRequestBody {
   idea?: string;
@@ -23,6 +27,19 @@ interface IdeaDraftRequestBody {
     resolution?: string;
     targetMinutes?: number;
   };
+}
+
+interface PatternApplicationRequestBody {
+  patternScript?: string;
+  userScript?: string;
+  apiKey?: string;
+}
+
+interface ThumbnailAssistantRequestBody {
+  provider?: 'groq' | 'gemini';
+  userMessage?: string;
+  systemPrompt?: string;
+  apiKey?: string;
 }
 
 const IDEA_DURATION_OPTIONS = [8, 10, 15, 20] as const;
@@ -219,6 +236,487 @@ function buildIdeaDraftPrompt(
       ? ['Current draft to expand and improve:', retryOptions.existingDraft].join('\n\n')
       : '',
   ].join('\n');
+}
+
+function getYouTubeTranscriptPromptExcerpt(transcript: string, maxChars = 12_000): string {
+  const normalizedTranscript = transcript.replace(/\s+/g, ' ').trim();
+
+  if (normalizedTranscript.length <= maxChars) {
+    return normalizedTranscript;
+  }
+
+  const clipped = normalizedTranscript.slice(0, maxChars);
+  const sentenceBoundary = Math.max(
+    clipped.lastIndexOf('. '),
+    clipped.lastIndexOf('! '),
+    clipped.lastIndexOf('? ')
+  );
+  const safeEnd = sentenceBoundary > Math.floor(maxChars * 0.7) ? sentenceBoundary + 1 : clipped.length;
+
+  return `${clipped.slice(0, safeEnd).trim()}\n\n[Transcript truncated for prompt length.]`;
+}
+
+function buildYouTubeTranscriptLearningPrompt(title: string, transcript: string): string {
+  const transcriptExcerpt = getYouTubeTranscriptPromptExcerpt(transcript);
+
+  return [
+    'Study this transcript as a source pattern.',
+    '',
+    'Do not copy unique sentences verbatim.',
+    'Instead, extract and apply:',
+    '- the hook structure',
+    '- recurring terminology',
+    '- pacing and sentence rhythm',
+    '- how punchlines are delivered',
+    '- how examples are introduced',
+    '- how sections transition',
+    '- how the ending and CTA are framed',
+    '',
+    'Return plain text only in exactly this layout:',
+    '',
+    'STYLE PROFILE',
+    'Hook structure: describe the opening pattern.',
+    'Recurring terminology: list the important repeated words, phrases, or framing terms.',
+    'Pacing and sentence rhythm: describe sentence length, flow, and emphasis style.',
+    'Punchline delivery: explain how punchlines or sharp lines land.',
+    'Example introduction pattern: explain how examples are set up and developed.',
+    'Section transition pattern: explain how one beat moves to the next.',
+    'Ending and CTA framing: explain how the script closes and what kind of CTA it uses.',
+    '',
+    'NEW SCRIPT',
+    'Initial Concept',
+    '(Write the opening using the learned hook structure and tone. Do not quote the source.)',
+    '',
+    'Develop Story',
+    '(Write the body using the learned terminology, rhythm, example pattern, and transitions. Do not quote the source.)',
+    '',
+    'Key Moment',
+    '(Write the strongest insight or emotional turn using the learned punchline style. Do not quote the source.)',
+    '',
+    'Wrap Up',
+    '(Close using the learned ending and CTA framing. Do not quote the source.)',
+    '',
+    'Rules for NEW SCRIPT:',
+    '- Use the exact headings: Initial Concept, Develop Story, Key Moment, Wrap Up.',
+    '- Write in natural spoken language.',
+    '- Keep the structure and rhetorical patterns from the source, but make the wording newly generated.',
+    '- Never copy distinctive sentences from the transcript.',
+    '- No markdown, no bullet lists, no bold formatting in NEW SCRIPT.',
+    '',
+    `Title: ${title}`,
+    'Transcript:',
+    transcriptExcerpt,
+  ].join('\n');
+}
+
+function buildPatternApplicationPrompt(patternScript: string, userScript: string): string {
+  const patternExcerpt = getYouTubeTranscriptPromptExcerpt(patternScript, 8_000);
+  const userScriptExcerpt = getYouTubeTranscriptPromptExcerpt(userScript, 8_000);
+
+  return [
+    'Study the first script as a source pattern, then rewrite the second script using that pattern logic.',
+    '',
+    'Do not paste the pattern into the user script.',
+    'Do not copy distinctive sentences from the pattern verbatim.',
+    'Preserve the user script\'s subject, core facts, named entities, and overall meaning.',
+    'Improve the user script by borrowing the pattern\'s rhetorical logic only.',
+    '',
+    'Extract and apply these elements from the pattern:',
+    '- hook structure',
+    '- recurring terminology or framing words',
+    '- pacing and sentence rhythm',
+    '- how examples are introduced',
+    '- transition style between beats',
+    '- how the ending and CTA are framed',
+    '',
+    'Rewrite rules:',
+    '- Keep the improved script focused on the user script\'s story, not the pattern\'s original topic.',
+    '- Strengthen weak transitions and add connective phrasing where needed.',
+    '- Reuse recurring framing terms only when they fit naturally.',
+    '- If the user script lacks a concrete example, add a short believable illustrative moment that matches the story.',
+    '- End with a stronger callback or CTA that fits the user script.',
+    '- Return plain text only.',
+    '- Do not use headings, bullet points, markdown, or analysis.',
+    '',
+    'PATTERN SCRIPT:',
+    patternExcerpt,
+    '',
+    'USER SCRIPT TO IMPROVE:',
+    userScriptExcerpt,
+  ].join('\n');
+}
+
+const PATTERN_FALLBACK_STOP_WORDS = new Set([
+  'about', 'after', 'again', 'almost', 'along', 'also', 'always', 'around', 'because', 'before', 'being', 'begins',
+  'between', 'could', 'every', 'first', 'from', 'grows', 'here', 'into', 'just', 'longer', 'might', 'other',
+  'over', 'same', 'short', 'should', 'still', 'story', 'their', 'there', 'these', 'thing', 'through', 'under',
+  'until', 'using', 'value', 'where', 'which', 'while', 'without', 'would', 'your', 'journey', 'example',
+  'transition', 'ending', 'hook', 'body', 'rhythm', 'cta', 'script', 'pattern'
+]);
+
+function splitSentences(text: string): string[] {
+  return text
+    .replace(/\s+/g, ' ')
+    .trim()
+    .match(/[^.!?]+[.!?]?/g)
+    ?.map((sentence) => sentence.trim())
+    .filter(Boolean)
+    ?? [];
+}
+
+function ensureSentence(text: string): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return '';
+  }
+
+  return /[.!?]$/.test(normalized) ? normalized : `${normalized}.`;
+}
+
+function stripOuterQuotes(text: string): string {
+  return text.trim().replace(/^['"“”]+|['"“”]+$/g, '').trim();
+}
+
+function parsePatternBlocks(patternScript: string): Record<string, string> {
+  const labels = ['Hook', 'Body Rhythm', 'Short burst', 'Longer line', 'Example', 'Transition', 'Ending CTA', 'Initial Concept', 'Develop Story', 'Key Moment', 'Wrap Up'];
+  const parsed: Record<string, string[]> = {};
+  let currentLabel: string | null = null;
+
+  patternScript
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .forEach((line) => {
+      if (!line) {
+        return;
+      }
+
+      const nextLabel = labels.find((label) => line.toLowerCase().startsWith(label.toLowerCase()));
+      if (nextLabel) {
+        currentLabel = nextLabel;
+        const remainder = line.slice(nextLabel.length).replace(/^\s*:\s*/, '').trim();
+        if (!parsed[currentLabel]) {
+          parsed[currentLabel] = [];
+        }
+        if (remainder) {
+          parsed[currentLabel].push(remainder);
+        }
+        return;
+      }
+
+      if (currentLabel) {
+        parsed[currentLabel].push(line);
+      }
+    });
+
+  return Object.fromEntries(
+    Object.entries(parsed)
+      .map(([label, lines]) => [label, lines.join(' ').trim()])
+      .filter(([, value]) => Boolean(value))
+  );
+}
+
+function extractDominantPatternTerm(patternScript: string): string | null {
+  const words = patternScript.toLowerCase().match(/[a-z][a-z'-]{3,}/g) ?? [];
+  const counts = new Map<string, number>();
+
+  words.forEach((word) => {
+    if (PATTERN_FALLBACK_STOP_WORDS.has(word)) {
+      return;
+    }
+    counts.set(word, (counts.get(word) ?? 0) + 1);
+  });
+
+  const [topWord, topCount] = [...counts.entries()].sort((left, right) => right[1] - left[1])[0] ?? [];
+  return topWord && typeof topCount === 'number' && topCount > 1 ? topWord : null;
+}
+
+function buildFallbackPatternAppliedScript(patternScript: string, userScript: string): string {
+  const blocks = parsePatternBlocks(patternScript);
+  const userSentences = splitSentences(userScript);
+  const opening = ensureSentence(userSentences[0] || userScript);
+  const continuation = ensureSentence(userSentences.slice(1).join(' '));
+  const dominantTerm = extractDominantPatternTerm(patternScript);
+  const transition = ensureSentence(stripOuterQuotes(blocks.Transition || 'But here is the twist'));
+  const endingCta = ensureSentence(stripOuterQuotes(blocks['Ending CTA'] || blocks['Wrap Up'] || 'Keep shaping it until the story becomes stronger'));
+  const exampleSeed = ensureSentence(stripOuterQuotes(userSentences[1] || userSentences[0] || userScript));
+
+  const improvedSentences = [
+    opening,
+    dominantTerm
+      ? ensureSentence(`That was the ${dominantTerm} inside the story, the first sign that this journey could become something larger`)
+      : ensureSentence('That opening gives the story a stronger center, but a strong beginning still needs rhythm and direction'),
+    continuation,
+    dominantTerm
+      ? ensureSentence(`A ${dominantTerm} can start the motion, but without pressure, proof, and purpose it fades before the story fully lands`)
+      : ensureSentence('Momentum matters because effort alone is not enough to make a story feel complete'),
+    ensureSentence(`Imagine this moment in real life: ${exampleSeed.replace(/[.!?]+$/g, '')}. That is where the story stops sounding general and starts feeling real`),
+    transition,
+    ensureSentence('The real shift comes when the character moves from effort into intention, turning scattered action into a direction people can actually follow'),
+    ensureSentence(`That is the takeaway. ${endingCta.replace(/[.!?]+$/g, '')}`),
+  ].filter(Boolean);
+
+  return improvedSentences.join(' ');
+}
+
+function extractYouTubeStyleProfile(text: string): string | null {
+  const match = text.match(/STYLE PROFILE\s*([\s\S]*?)\s*NEW SCRIPT\s*/i);
+  const profile = match?.[1]?.trim();
+  return profile ? profile : null;
+}
+
+function extractYouTubeScript(text: string): string {
+  const match = text.match(/NEW SCRIPT\s*([\s\S]*)$/i);
+  return (match?.[1] || text).trim();
+}
+
+async function generateYouTubeStyleDraftWithProvider(
+  provider: 'groq' | 'huggingface',
+  title: string,
+  transcript: string,
+  errorCapture?: { message: string }
+): Promise<{ script: string; styleProfile: string | null } | null> {
+  const prompt = buildYouTubeTranscriptLearningPrompt(title, transcript);
+
+  if (provider === 'groq') {
+    const apiKey = process.env.GROQ_API_KEY;
+
+    if (!apiKey) {
+      return null;
+    }
+
+    try {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.7,
+          max_tokens: 3500,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let detail = `HTTP ${response.status}`;
+        try {
+          const parsed = JSON.parse(errorText);
+          detail = parsed?.error?.message || parsed?.error || parsed?.message || errorText;
+        } catch {
+          detail = errorText || detail;
+        }
+        if (errorCapture) {
+          errorCapture.message = `Groq error (${response.status}): ${typeof detail === 'string' ? detail.slice(0, 200) : detail}`;
+        }
+        return null;
+      }
+
+      const data = await response.json();
+      const rawText = data?.choices?.[0]?.message?.content?.trim();
+      if (!rawText) {
+        return null;
+      }
+
+      return {
+        script: normalizeGeneratedIdeaDraft(extractYouTubeScript(rawText)),
+        styleProfile: extractYouTubeStyleProfile(rawText),
+      };
+    } catch (error) {
+      console.warn('Groq YouTube style generation request failed:', error);
+      return null;
+    }
+  }
+
+  const apiKey = process.env.HUGGINGFACE_API_KEY;
+  const model = process.env.HUGGINGFACE_MODEL || 'Qwen/Qwen2.5-72B-Instruct';
+
+  if (!apiKey) {
+    return null;
+  }
+
+  try {
+    const response = await fetch('https://router.huggingface.co/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 2800,
+        stream: false,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let detail = `HTTP ${response.status}`;
+      try {
+        const parsed = JSON.parse(errorText);
+        detail = parsed?.error?.message || parsed?.error || parsed?.message || errorText;
+      } catch {
+        detail = errorText || detail;
+      }
+      if (errorCapture) {
+        errorCapture.message = `HuggingFace error (${response.status}): ${typeof detail === 'string' ? detail.slice(0, 200) : detail}`;
+      }
+      return null;
+    }
+
+    const data = await response.json();
+    const content = data?.choices?.[0]?.message?.content;
+    const rawText = typeof content === 'string'
+      ? content.trim()
+      : Array.isArray(content)
+        ? content
+            .map((part: { text?: string; type?: string }) => typeof part?.text === 'string' ? part.text : '')
+            .join('')
+            .trim()
+        : '';
+
+    if (!rawText) {
+      return null;
+    }
+
+    return {
+      script: normalizeGeneratedIdeaDraft(extractYouTubeScript(rawText)),
+      styleProfile: extractYouTubeStyleProfile(rawText),
+    };
+  } catch (error) {
+    console.warn('Hugging Face YouTube style generation request failed:', error);
+    return null;
+  }
+}
+
+async function generatePatternAppliedScriptWithProvider(
+  provider: 'groq' | 'huggingface',
+  patternScript: string,
+  userScript: string,
+  providerApiKey?: string,
+  errorCapture?: { message: string }
+): Promise<string | null> {
+  const prompt = buildPatternApplicationPrompt(patternScript, userScript);
+
+  if (provider === 'groq') {
+    const apiKey = providerApiKey || process.env.GROQ_API_KEY;
+
+    if (!apiKey) {
+      return null;
+    }
+
+    try {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.7,
+          max_tokens: 2200,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let detail = `HTTP ${response.status}`;
+        try {
+          const parsed = JSON.parse(errorText);
+          detail = parsed?.error?.message || parsed?.error || parsed?.message || errorText;
+        } catch {
+          detail = errorText || detail;
+        }
+        if (errorCapture) {
+          errorCapture.message = `Groq error (${response.status}): ${typeof detail === 'string' ? detail.slice(0, 200) : detail}`;
+        }
+        return null;
+      }
+
+      const data = await response.json();
+      const text = data?.choices?.[0]?.message?.content;
+      return typeof text === 'string' ? text.trim() || null : null;
+    } catch (error) {
+      console.warn('Groq pattern application request failed:', error);
+      return null;
+    }
+  }
+
+  const apiKey = providerApiKey || process.env.HUGGINGFACE_API_KEY;
+  const model = process.env.HUGGINGFACE_MODEL || 'Qwen/Qwen2.5-72B-Instruct';
+
+  if (!apiKey) {
+    return null;
+  }
+
+  try {
+    const response = await fetch('https://router.huggingface.co/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 1800,
+        stream: false,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let detail = `HTTP ${response.status}`;
+      try {
+        const parsed = JSON.parse(errorText);
+        detail = parsed?.error?.message || parsed?.error || parsed?.message || errorText;
+      } catch {
+        detail = errorText || detail;
+      }
+      if (errorCapture) {
+        errorCapture.message = `HuggingFace error (${response.status}): ${typeof detail === 'string' ? detail.slice(0, 200) : detail}`;
+      }
+      return null;
+    }
+
+    const data = await response.json();
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content === 'string') {
+      return content.trim() || null;
+    }
+
+    if (Array.isArray(content)) {
+      const joined = content
+        .map((part: { text?: string; type?: string }) => typeof part?.text === 'string' ? part.text : '')
+        .join('')
+        .trim();
+
+      return joined || null;
+    }
+
+    return null;
+  } catch (error) {
+    console.warn('Hugging Face pattern application request failed:', error);
+    return null;
+  }
 }
 
 async function expandIdeaWithGroq(
@@ -441,6 +939,8 @@ async function fetchWithTimeout(input: string, init?: RequestInit, timeoutMs: nu
 
 type ApiErrorCode =
   | 'invalid_input'
+  | 'unauthorized'
+  | 'guest_trial_used'
   | 'missing_configuration'
   | 'captions_unavailable'
   | 'video_unavailable'
@@ -459,6 +959,317 @@ function sendApiError(
   userMessage: string
 ) {
   return res.status(status).json({ code, error, userMessage });
+}
+
+function getFirebaseProjectId(): string | null {
+  return process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || null;
+}
+
+function getFirebaseStorageBucketName(): string | null {
+  return process.env.FIREBASE_STORAGE_BUCKET || process.env.VITE_FIREBASE_STORAGE_BUCKET || null;
+}
+
+function getFirebaseAdminApp() {
+  const existingApp = getAdminApps().find((app) => app.name === 'tubeflow-admin');
+  if (existingApp) {
+    return existingApp;
+  }
+
+  const projectId = getFirebaseProjectId();
+  if (!projectId) {
+    throw new Error('Firebase Admin is missing FIREBASE_PROJECT_ID or VITE_FIREBASE_PROJECT_ID.');
+  }
+
+  const storageBucket = getFirebaseStorageBucketName() ?? undefined;
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
+  if (serviceAccountJson) {
+    return initializeAdminApp(
+      {
+        credential: cert(JSON.parse(serviceAccountJson)),
+        projectId,
+        storageBucket,
+      },
+      'tubeflow-admin',
+    );
+  }
+
+  const clientEmail = process.env.FIREBASE_ADMIN_CLIENT_EMAIL?.trim();
+  const privateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  if (clientEmail && privateKey) {
+    return initializeAdminApp(
+      {
+        credential: cert({
+          projectId,
+          clientEmail,
+          privateKey,
+        }),
+        projectId,
+        storageBucket,
+      },
+      'tubeflow-admin',
+    );
+  }
+
+  return initializeAdminApp(
+    {
+      credential: applicationDefault(),
+      projectId,
+      storageBucket,
+    },
+    'tubeflow-admin',
+  );
+}
+
+function getFirebaseAdminContext() {
+  const app = getFirebaseAdminApp();
+  return {
+    auth: getAdminAuth(app),
+    firestore: getAdminFirestore(app),
+    storage: getAdminStorage(app),
+  };
+}
+
+function readBearerToken(req: Request): string | null {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return null;
+  }
+
+  const [scheme, token] = authHeader.split(' ');
+  if (scheme !== 'Bearer' || !token) {
+    return null;
+  }
+
+  return token;
+}
+
+function hasFirebaseAdminErrorCode(error: unknown, expectedCode: string): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && String((error as { code: unknown }).code).includes(expectedCode);
+}
+
+type UsageQuotaKind = 'idea' | 'draft';
+
+type AuthAccess = {
+  decodedToken: DecodedIdToken | null;
+};
+
+class UsageQuotaExceededError extends Error {
+  readonly kind: UsageQuotaKind;
+
+  constructor(kind: UsageQuotaKind) {
+    super(kind === 'idea'
+      ? 'Your monthly idea generation quota has been reached.'
+      : 'Your monthly AI draft quota has been reached.');
+    this.name = 'UsageQuotaExceededError';
+    this.kind = kind;
+  }
+}
+
+function getQuotaLimit(kind: UsageQuotaKind): number {
+  const rawValue = kind === 'idea'
+    ? process.env.TUBEFLOW_MONTHLY_IDEA_LIMIT
+    : process.env.TUBEFLOW_MONTHLY_DRAFT_LIMIT;
+  const parsedValue = Number(rawValue);
+
+  if (Number.isFinite(parsedValue) && parsedValue > 0) {
+    return parsedValue;
+  }
+
+  return kind === 'idea' ? 40 : 120;
+}
+
+async function requireAuthenticatedUser(req: Request): Promise<DecodedIdToken> {
+  const idToken = readBearerToken(req);
+  if (!idToken) {
+    throw new Error('Missing Firebase ID token.');
+  }
+
+  const { auth } = getFirebaseAdminContext();
+  return auth.verifyIdToken(idToken);
+}
+
+async function requireAuthenticatedUserOrGuestTrial(req: Request, kind: UsageQuotaKind): Promise<AuthAccess> {
+  const idToken = readBearerToken(req);
+
+  if (idToken) {
+    const { auth } = getFirebaseAdminContext();
+    const decodedToken = await auth.verifyIdToken(idToken);
+    await consumeUserQuota(decodedToken, kind);
+    return {
+      decodedToken,
+    };
+  }
+
+  return {
+    decodedToken: null,
+  };
+}
+
+async function consumeUserQuota(decodedToken: DecodedIdToken, kind: UsageQuotaKind): Promise<void> {
+  const { firestore } = getFirebaseAdminContext();
+  const userRef = firestore.doc(`users/${decodedToken.uid}`);
+  const now = new Date();
+  const monthlyLimit = getQuotaLimit(kind);
+
+  await firestore.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(userRef);
+    const data = snapshot.exists ? snapshot.data() as Record<string, any> : {};
+    const quota = typeof data.quota === 'object' && data.quota !== null ? data.quota : {};
+
+    const resetAt = quota.resetAt instanceof Timestamp
+      ? quota.resetAt.toDate()
+      : quota.resetAt?.toDate?.() instanceof Date
+        ? quota.resetAt.toDate()
+        : null;
+
+    const shouldResetCounters = !resetAt
+      || resetAt.getUTCFullYear() !== now.getUTCFullYear()
+      || resetAt.getUTCMonth() !== now.getUTCMonth();
+
+    const ideasThisMonth = shouldResetCounters ? 0 : Number(quota.ideasThisMonth) || 0;
+    const draftsThisMonth = shouldResetCounters ? 0 : Number(quota.draftsThisMonth) || 0;
+
+    if (kind === 'idea' && ideasThisMonth >= monthlyLimit) {
+      throw new UsageQuotaExceededError(kind);
+    }
+
+    if (kind === 'draft' && draftsThisMonth >= monthlyLimit) {
+      throw new UsageQuotaExceededError(kind);
+    }
+
+    transaction.set(userRef, {
+      uid: decodedToken.uid,
+      email: decodedToken.email ?? data.email ?? '',
+      displayName: decodedToken.name ?? data.displayName ?? 'TubeFlow User',
+      quota: {
+        ideasThisMonth: kind === 'idea' ? ideasThisMonth + 1 : ideasThisMonth,
+        draftsThisMonth: kind === 'draft' ? draftsThisMonth + 1 : draftsThisMonth,
+        resetAt: Timestamp.fromDate(now),
+      },
+    }, { merge: true });
+  });
+}
+
+function isQuotaExceededError(error: unknown): error is UsageQuotaExceededError {
+  return error instanceof UsageQuotaExceededError;
+}
+
+function getQuotaExceededUserMessage(kind: UsageQuotaKind): string {
+  return kind === 'idea'
+    ? 'You have used all idea generations for this month on your current plan.'
+    : 'You have used all AI draft generations for this month on your current plan.';
+}
+
+async function deleteCollectionDocuments(firestore: Firestore, collectionPath: string): Promise<void> {
+  const snapshot = await firestore.collection(collectionPath).get();
+  if (snapshot.empty) {
+    return;
+  }
+
+  const batchSize = 400;
+  for (let index = 0; index < snapshot.docs.length; index += batchSize) {
+    const batch = firestore.batch();
+    snapshot.docs.slice(index, index + batchSize).forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
+  }
+}
+
+async function deleteAndDisableFirebaseAccount(decodedToken: DecodedIdToken): Promise<void> {
+  const { auth, firestore, storage } = getFirebaseAdminContext();
+  const userRecord = await auth.getUser(decodedToken.uid);
+  const disabledUserRef = firestore.doc(`disabledUsers/${decodedToken.uid}`);
+
+  await disabledUserRef.set(
+    {
+      uid: decodedToken.uid,
+      email: userRecord.email ?? decodedToken.email ?? '',
+      displayName: userRecord.displayName ?? decodedToken.name ?? 'TubeFlow User',
+      authRetention: 'firebase-auth-retained',
+      status: 'deleting',
+      disabledAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  await auth.updateUser(decodedToken.uid, { disabled: true });
+  await auth.revokeRefreshTokens(decodedToken.uid);
+  await deleteCollectionDocuments(firestore, `users/${decodedToken.uid}/projects`);
+  await firestore.doc(`users/${decodedToken.uid}`).delete();
+  await storage.bucket().file(`avatars/${decodedToken.uid}`).delete({ ignoreNotFound: true });
+
+  await disabledUserRef.set(
+    {
+      status: 'disabled',
+      dataPurgedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+}
+
+async function executeThumbnailAssistantRequest(
+  provider: 'groq' | 'gemini',
+  apiKey: string,
+  systemPrompt: string,
+  userMessage: string,
+): Promise<string> {
+  if (provider === 'gemini') {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: `${systemPrompt}\n\nUser request: ${userMessage}` },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: 'application/json',
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText || `Gemini request failed with status ${response.status}.`);
+    }
+
+    const data = await response.json();
+    return data?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text || '').join('') || '';
+  }
+
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      temperature: 0.1,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || `Groq request failed with status ${response.status}.`);
+  }
+
+  const data = await response.json();
+  return data?.choices?.[0]?.message?.content || '';
 }
 
 function classifyTranscriptError(error: string): { code: ApiErrorCode; userMessage: string } {
@@ -1506,8 +2317,150 @@ async function startServer() {
   });
   app.use('/api', apiLimiter);
 
+  app.post('/api/account/delete', async (req, res) => {
+    const idToken = readBearerToken(req);
+    if (!idToken) {
+      return sendApiError(
+        res,
+        401,
+        'unauthorized',
+        'Missing Firebase ID token.',
+        'Sign in again before deleting your account data.',
+      );
+    }
+
+    try {
+      const { auth } = getFirebaseAdminContext();
+      const decodedToken = await auth.verifyIdToken(idToken);
+      await deleteAndDisableFirebaseAccount(decodedToken);
+      return res.json({ ok: true });
+    } catch (error) {
+      console.error('Account deletion failed:', error);
+
+      if (
+        hasFirebaseAdminErrorCode(error, 'auth/id-token-expired')
+        || hasFirebaseAdminErrorCode(error, 'auth/argument-error')
+        || hasFirebaseAdminErrorCode(error, 'auth/invalid-id-token')
+        || hasFirebaseAdminErrorCode(error, 'auth/user-disabled')
+      ) {
+        return sendApiError(
+          res,
+          401,
+          'unauthorized',
+          'Firebase session is no longer valid for account deletion.',
+          'Sign in again before deleting your account data.',
+        );
+      }
+
+      if (
+        error instanceof Error
+        && (
+          error.message.includes('Could not load the default credentials')
+          || error.message.includes('Firebase Admin is missing')
+          || error.message.includes('Failed to parse private key')
+        )
+      ) {
+        return sendApiError(
+          res,
+          503,
+          'missing_configuration',
+          error.message,
+          'Firebase Admin credentials are not configured on the server yet. Add the admin credentials, then retry the account deletion.',
+        );
+      }
+
+      return sendApiError(
+        res,
+        500,
+        'processing_failed',
+        error instanceof Error ? error.message : 'Unknown account deletion error.',
+        'We could not finish deleting that account right now. Please try again in a moment.',
+      );
+    }
+  });
+
+  app.post('/api/thumbnail-assistant', aiGenerationLimiter, async (req, res) => {
+    try {
+      await requireAuthenticatedUserOrGuestTrial(req, 'draft');
+
+      const { provider, userMessage, systemPrompt, apiKey } = req.body as ThumbnailAssistantRequestBody;
+
+      if (provider !== 'groq' && provider !== 'gemini') {
+        return sendApiError(res, 400, 'invalid_input', 'Unsupported thumbnail assistant provider.', 'Choose Gemini or Groq for the thumbnail assistant.');
+      }
+
+      if (!userMessage || typeof userMessage !== 'string') {
+        return sendApiError(res, 400, 'invalid_input', 'User message is required.', 'Enter a thumbnail command before sending it.');
+      }
+
+      if (!systemPrompt || typeof systemPrompt !== 'string') {
+        return sendApiError(res, 400, 'invalid_input', 'System prompt is required.', 'The thumbnail assistant prompt is missing. Refresh the page and try again.');
+      }
+
+      const providerApiKey = typeof apiKey === 'string' && apiKey.trim()
+        ? apiKey.trim()
+        : provider === 'gemini'
+          ? process.env.GEMINI_API_KEY ?? process.env.VITE_GEMINI_API_KEY ?? ''
+          : process.env.GROQ_API_KEY ?? '';
+
+      if (!providerApiKey) {
+        return sendApiError(
+          res,
+          503,
+          'missing_configuration',
+          `${provider} API key is missing for thumbnail assistant requests.`,
+          provider === 'gemini'
+            ? 'Add a Gemini API key in settings or on the server, then try again.'
+            : 'Add a Groq API key in settings or on the server, then try again.',
+        );
+      }
+
+      const content = await executeThumbnailAssistantRequest(provider, providerApiKey, systemPrompt, userMessage);
+      return res.json({ content });
+    } catch (error) {
+      console.error('Thumbnail assistant request failed:', error);
+
+      if (
+        hasFirebaseAdminErrorCode(error, 'auth/id-token-expired')
+        || hasFirebaseAdminErrorCode(error, 'auth/argument-error')
+        || hasFirebaseAdminErrorCode(error, 'auth/invalid-id-token')
+        || hasFirebaseAdminErrorCode(error, 'auth/user-disabled')
+        || (error instanceof Error && error.message.includes('Missing Firebase ID token'))
+      ) {
+        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized thumbnail assistant request.', 'Sign in to use the thumbnail assistant.');
+      }
+
+      if (isQuotaExceededError(error)) {
+        return sendApiError(res, 403, 'quota_exceeded', error.message, getQuotaExceededUserMessage(error.kind));
+      }
+
+      const classified = classifyProviderError(error instanceof Error ? error.message : 'Thumbnail assistant provider unavailable.');
+      return sendApiError(res, 502, classified.code, error instanceof Error ? error.message : 'Thumbnail assistant provider unavailable.', classified.userMessage);
+    }
+  });
+
   // ===== YOUTUBE URL → TRANSCRIPT → SCRIPT ENDPOINT =====
   app.post("/api/youtube-to-script", aiGenerationLimiter, async (req, res) => {
+    try {
+      await requireAuthenticatedUserOrGuestTrial(req, 'draft');
+    } catch (error) {
+      if (
+        hasFirebaseAdminErrorCode(error, 'auth/id-token-expired')
+        || hasFirebaseAdminErrorCode(error, 'auth/argument-error')
+        || hasFirebaseAdminErrorCode(error, 'auth/invalid-id-token')
+        || hasFirebaseAdminErrorCode(error, 'auth/user-disabled')
+        || (error instanceof Error && error.message.includes('Missing Firebase ID token'))
+      ) {
+        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', 'Sign in to generate AI drafts.');
+      }
+
+      if (isQuotaExceededError(error)) {
+        return sendApiError(res, 403, 'quota_exceeded', error.message, getQuotaExceededUserMessage(error.kind));
+      }
+
+      return sendApiError(res, 500, 'processing_failed', error instanceof Error ? error.message : 'Failed to validate request quota.', 'We could not validate your account usage right now. Please try again.');
+    }
+
     const { url } = req.body as { url?: string };
 
     if (!url || typeof url !== 'string') {
@@ -1559,36 +2512,34 @@ async function startServer() {
 
     const { title, transcript } = transcriptResult;
 
-    // Step 2: build AI prompt
-    const idea =
-      `Adapt this YouTube video into a structured spoken script.\n\nTitle: ${title}\n\nTranscript:\n${
-        transcript.slice(0, 4000)
-      }`;
-
-    // Step 3: generate script phases via AI
+    // Step 2: learn the transcript's rhetorical pattern, then generate a new script from it
     const groqErrorCapture: { message: string } = { message: '' };
     const hfErrorCapture: { message: string } = { message: '' };
     let resultProvider: 'groq' | 'huggingface' = provider;
 
-    let expandedIdea = await generateIdeaDraftWithProvider(
-      provider, idea, { targetMinutes: 10 },
+    let generatedYouTubeDraft = await generateYouTubeStyleDraftWithProvider(
+      provider,
+      title,
+      transcript,
       provider === 'groq' ? groqErrorCapture : hfErrorCapture
     );
 
-    if (!expandedIdea) {
+    if (!generatedYouTubeDraft) {
       const fallback: 'groq' | 'huggingface' = provider === 'huggingface' ? 'groq' : 'huggingface';
       const fallbackKeyPresent =
         fallback === 'groq' ? !!process.env.GROQ_API_KEY : !!process.env.HUGGINGFACE_API_KEY;
       if (fallbackKeyPresent) {
         resultProvider = fallback;
-        expandedIdea = await generateIdeaDraftWithProvider(
-          fallback, idea, { targetMinutes: 10 },
+        generatedYouTubeDraft = await generateYouTubeStyleDraftWithProvider(
+          fallback,
+          title,
+          transcript,
           fallback === 'groq' ? groqErrorCapture : hfErrorCapture
         );
       }
     }
 
-    if (!expandedIdea) {
+    if (!generatedYouTubeDraft) {
       const detail = groqErrorCapture.message || hfErrorCapture.message;
       const classified = classifyProviderError(detail || 'Failed to generate script from the video transcript.');
       return sendApiError(
@@ -1600,8 +2551,12 @@ async function startServer() {
       );
     }
 
-    const result = buildIdeaScriptDraft(idea, { targetMinutes: 10 }, expandedIdea, resultProvider);
-    res.json(result);
+    const result = buildIdeaScriptDraft(title, { targetMinutes: 10 }, generatedYouTubeDraft.script, resultProvider);
+    res.json({
+      ...result,
+      styleProfile: generatedYouTubeDraft.styleProfile,
+      sourceTitle: title,
+    });
   });
 
 
@@ -1720,8 +2675,109 @@ async function startServer() {
     }
   });
 
+  app.post('/api/script/apply-pattern', aiGenerationLimiter, async (req, res) => {
+    try {
+      await requireAuthenticatedUserOrGuestTrial(req, 'draft');
+
+      const { patternScript, userScript, apiKey } = req.body as PatternApplicationRequestBody;
+
+      if (!patternScript || typeof patternScript !== 'string') {
+        return sendApiError(res, 400, 'invalid_input', 'Pattern script is required.', 'Drag a saved pattern into the editor to continue.');
+      }
+
+      if (!userScript || typeof userScript !== 'string') {
+        return sendApiError(res, 400, 'invalid_input', 'User script is required.', 'Paste a draft into the editor before applying a pattern.');
+      }
+
+      const patternLengthError = enforceMaxLength(
+        res,
+        patternScript,
+        'Pattern script',
+        MAX_SCRIPT_LENGTH,
+        'That pattern is too large to process in one request. Shorten the saved pattern and try again.'
+      );
+      if (patternLengthError) {
+        return patternLengthError;
+      }
+
+      const userScriptLengthError = enforceMaxLength(
+        res,
+        userScript,
+        'User script',
+        MAX_SCRIPT_LENGTH,
+        'That draft is too large to improve in one request. Split it into smaller parts and try again.'
+      );
+      if (userScriptLengthError) {
+        return userScriptLengthError;
+      }
+
+      const trimmedApiKey = typeof apiKey === 'string' ? apiKey.trim() : '';
+      const provider = trimmedApiKey ? 'groq' : getAvailableIdeaDraftProvider();
+      if (!provider) {
+        return res.json({ script: buildFallbackPatternAppliedScript(patternScript, userScript), source: 'local-pattern-fallback' });
+      }
+
+      const groqErrorCapture: { message: string } = { message: '' };
+      const hfErrorCapture: { message: string } = { message: '' };
+
+      let improvedScript = await generatePatternAppliedScriptWithProvider(
+        provider,
+        patternScript,
+        userScript,
+        provider === 'groq' ? trimmedApiKey : undefined,
+        provider === 'groq' ? groqErrorCapture : hfErrorCapture
+      );
+
+      if (!improvedScript) {
+        const fallback: 'groq' | 'huggingface' = provider === 'huggingface' ? 'groq' : 'huggingface';
+        const fallbackKeyPresent = fallback === 'groq' ? Boolean(trimmedApiKey || process.env.GROQ_API_KEY) : !!process.env.HUGGINGFACE_API_KEY;
+        if (fallbackKeyPresent) {
+          improvedScript = await generatePatternAppliedScriptWithProvider(
+            fallback,
+            patternScript,
+            userScript,
+            fallback === 'groq' ? trimmedApiKey : undefined,
+            fallback === 'groq' ? groqErrorCapture : hfErrorCapture
+          );
+        }
+      }
+
+      if (!improvedScript) {
+        improvedScript = buildFallbackPatternAppliedScript(patternScript, userScript);
+      }
+
+      return res.json({ script: improvedScript.trim() });
+    } catch (error) {
+      console.error('Pattern application request failed:', error);
+
+      if (
+        hasFirebaseAdminErrorCode(error, 'auth/id-token-expired')
+        || hasFirebaseAdminErrorCode(error, 'auth/argument-error')
+        || hasFirebaseAdminErrorCode(error, 'auth/invalid-id-token')
+        || hasFirebaseAdminErrorCode(error, 'auth/user-disabled')
+        || (error instanceof Error && error.message.includes('Missing Firebase ID token'))
+      ) {
+        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', 'Sign in to apply saved patterns.');
+      }
+
+      if (isQuotaExceededError(error)) {
+        return sendApiError(res, 403, 'quota_exceeded', error.message, getQuotaExceededUserMessage(error.kind));
+      }
+
+      return sendApiError(
+        res,
+        500,
+        'processing_failed',
+        error instanceof Error ? error.message : 'Failed to apply the pattern to the script.',
+        'We could not apply that pattern right now. Please try again in a moment.'
+      );
+    }
+  });
+
   app.post("/api/process/idea-draft", aiGenerationLimiter, async (req, res) => {
     try {
+      await requireAuthenticatedUserOrGuestTrial(req, 'idea');
+
       const { idea, platform, sections } = req.body as IdeaDraftRequestBody;
 
       if (!idea || typeof idea !== 'string') {
@@ -1824,6 +2880,20 @@ async function startServer() {
 
       res.json(result);
     } catch (error) {
+      if (
+        hasFirebaseAdminErrorCode(error, 'auth/id-token-expired')
+        || hasFirebaseAdminErrorCode(error, 'auth/argument-error')
+        || hasFirebaseAdminErrorCode(error, 'auth/invalid-id-token')
+        || hasFirebaseAdminErrorCode(error, 'auth/user-disabled')
+        || (error instanceof Error && error.message.includes('Missing Firebase ID token'))
+      ) {
+        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', 'Sign in to generate idea drafts.');
+      }
+
+      if (isQuotaExceededError(error)) {
+        return sendApiError(res, 403, 'quota_exceeded', error.message, getQuotaExceededUserMessage(error.kind));
+      }
+
       console.error('Idea draft processing error:', error);
       res.status(500).json({
         code: 'processing_failed',
@@ -1905,6 +2975,26 @@ async function startServer() {
   app.post("/api/groq", aiGenerationLimiter, async (req, res) => {
     const { prompt } = req.body;
 
+    try {
+      await requireAuthenticatedUserOrGuestTrial(req, 'draft');
+    } catch (error) {
+      if (
+        hasFirebaseAdminErrorCode(error, 'auth/id-token-expired')
+        || hasFirebaseAdminErrorCode(error, 'auth/argument-error')
+        || hasFirebaseAdminErrorCode(error, 'auth/invalid-id-token')
+        || hasFirebaseAdminErrorCode(error, 'auth/user-disabled')
+        || (error instanceof Error && error.message.includes('Missing Firebase ID token'))
+      ) {
+        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', 'Sign in to generate AI drafts.');
+      }
+
+      if (isQuotaExceededError(error)) {
+        return sendApiError(res, 403, 'quota_exceeded', error.message, getQuotaExceededUserMessage(error.kind));
+      }
+
+      return sendApiError(res, 500, 'processing_failed', error instanceof Error ? error.message : 'Failed to validate request quota.', 'We could not validate your account usage right now. Please try again.');
+    }
+
     if (!prompt) {
       return sendApiError(res, 400, 'invalid_input', 'Prompt is required', 'Please enter a prompt before continuing.');
     }
@@ -1950,6 +3040,26 @@ async function startServer() {
   app.post("/api/generate-image", aiGenerationLimiter, async (req, res) => {
     const { prompt } = req.body;
     const apiKey = process.env.HUGGINGFACE_API_KEY;
+
+    try {
+      await requireAuthenticatedUserOrGuestTrial(req, 'draft');
+    } catch (error) {
+      if (
+        hasFirebaseAdminErrorCode(error, 'auth/id-token-expired')
+        || hasFirebaseAdminErrorCode(error, 'auth/argument-error')
+        || hasFirebaseAdminErrorCode(error, 'auth/invalid-id-token')
+        || hasFirebaseAdminErrorCode(error, 'auth/user-disabled')
+        || (error instanceof Error && error.message.includes('Missing Firebase ID token'))
+      ) {
+        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', 'Sign in to generate AI images.');
+      }
+
+      if (isQuotaExceededError(error)) {
+        return sendApiError(res, 403, 'quota_exceeded', error.message, getQuotaExceededUserMessage(error.kind));
+      }
+
+      return sendApiError(res, 500, 'processing_failed', error instanceof Error ? error.message : 'Failed to validate request quota.', 'We could not validate your account usage right now. Please try again.');
+    }
 
     if (!prompt) {
       return sendApiError(res, 400, 'invalid_input', 'Prompt is required', 'Please enter a prompt before continuing.');
