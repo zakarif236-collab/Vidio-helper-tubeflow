@@ -69,6 +69,7 @@ export async function createUserProfile(
     quota: {
       ideasThisMonth: 0,
       draftsThisMonth: 0,
+      thumbnailsThisMonth: 0,
       resetAt: serverTimestamp(),
     },
   });

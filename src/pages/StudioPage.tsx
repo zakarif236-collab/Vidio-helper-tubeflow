@@ -244,6 +244,11 @@ function formatPatternTimestamp(isoString: string): string {
   });
 }
 
+function isLikelyYouTubeUrl(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized.includes('youtube.com/') || normalized.includes('youtu.be/');
+}
+
 const IDEA_SECTION_MINIMUMS = {
   introduction: 18,
   development: 32,
@@ -1017,6 +1022,7 @@ const StudioPage = () => {
   const [patternAnalysisError, setPatternAnalysisError] = useState<string | null>(null);
   const [patternSavedFromUrl, setPatternSavedFromUrl] = useState(false);
   const [urlPatternSaveNotice, setUrlPatternSaveNotice] = useState<string | null>(null);
+  const [guestYoutubeSaveNotice, setGuestYoutubeSaveNotice] = useState(false);
   const [ideaSections, setIdeaSections] = useState(DEFAULT_IDEA_SECTIONS);
   const [ideaPlatform, setIdeaPlatform] = useState<'youtube' | 'tiktok'>('youtube');
   const [selectedStylePreset, setSelectedStylePreset] = useState<(typeof STYLE_PRESETS)[number]['id']>('educational');
@@ -1498,6 +1504,17 @@ const StudioPage = () => {
     window.setTimeout(() => setUrlPatternSaveNotice(null), 1800);
   };
 
+  const handleYoutubeUrlPaste = (event: React.ClipboardEvent<HTMLInputElement>) => {
+    if (user) {
+      return;
+    }
+
+    const pastedText = event.clipboardData?.getData('text') ?? '';
+    if (isLikelyYouTubeUrl(pastedText)) {
+      setGuestYoutubeSaveNotice(true);
+    }
+  };
+
   const handleProcessScript = async () => {
     if (!scriptText.trim()) {
       setError('Please enter script text');
@@ -1870,11 +1887,27 @@ const StudioPage = () => {
                     <input
                       type="url"
                       value={youtubeUrl}
-                      onChange={(e) => setYoutubeUrl(e.target.value)}
+                      onChange={(e) => {
+                        const nextValue = e.target.value;
+                        setYoutubeUrl(nextValue);
+
+                        if (!user) {
+                          setGuestYoutubeSaveNotice(isLikelyYouTubeUrl(nextValue));
+                        } else if (guestYoutubeSaveNotice) {
+                          setGuestYoutubeSaveNotice(false);
+                        }
+                      }}
+                      onPaste={handleYoutubeUrlPaste}
                       placeholder="https://youtube.com/watch?v=..."
                       className="w-full px-4 py-3 bg-black/40 border border-white/10 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/70 transition-colors"
                     />
                   </div>
+                  {!user && guestYoutubeSaveNotice && (
+                    <p className="mt-2 text-xs text-amber-300 flex items-start gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-[1px]" />
+                      You are not signed in. Patterns from this YouTube link may not be saved if you close the app. Sign in to keep them.
+                    </p>
+                  )}
                   <button
                     onClick={handleAnalyzeUrlAsPattern}
                     disabled={isAnalyzingPattern || loading}

@@ -16,6 +16,7 @@ export interface UserProfile {
   quota: {
     ideasThisMonth: number;
     draftsThisMonth: number;
+    thumbnailsThisMonth: number;
     resetAt: Timestamp;
   };
 }

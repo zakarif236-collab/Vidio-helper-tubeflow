@@ -111,25 +111,36 @@ function getPhaseWordRange(totalMinutes: number | undefined, phase: 'introductio
   return ranges[normalizedMinutes][phase];
 }
 
-function getAvailableIdeaDraftProvider(): 'groq' | 'huggingface' | null {
-  if (process.env.GROQ_API_KEY) {
-    return 'groq';
-  }
+let _providerRoundRobinCounter = 0;
 
-  if (process.env.HUGGINGFACE_API_KEY) {
-    return 'huggingface';
-  }
+function getAvailableIdeaDraftProvider(): 'groq' | 'huggingface' | 'gemini' | null {
+  const hasGroq = !!process.env.GROQ_API_KEY;
+  const hasHuggingFace = !!process.env.HUGGINGFACE_API_KEY;
+  const hasGeminiDraft = !!process.env.GEMINI_DRAFT_API_KEY;
 
-  return null;
+  const providers: Array<'groq' | 'huggingface' | 'gemini'> = [];
+  if (hasGroq) providers.push('groq');
+  if (hasHuggingFace) providers.push('huggingface');
+  if (hasGeminiDraft) providers.push('gemini');
+
+  if (providers.length === 0) return null;
+
+  // Round-robin across all available providers
+  _providerRoundRobinCounter += 1;
+  return providers[_providerRoundRobinCounter % providers.length];
 }
 
-function getIdeaDraftProviderLabel(provider: 'groq' | 'huggingface' | null): string {
+function getIdeaDraftProviderLabel(provider: 'groq' | 'huggingface' | 'gemini' | null): string {
   if (provider === 'groq') {
     return 'Groq (Llama 3.3)';
   }
 
   if (provider === 'huggingface') {
     return 'Hugging Face';
+  }
+
+  if (provider === 'gemini') {
+    return 'Gemini (Flash)';
   }
 
   return 'none';
@@ -695,6 +706,64 @@ async function generateYouTubeStyleDraftWithProvider(
   }
 }
 
+async function generateYouTubeStyleDraftWithGemini(
+  title: string,
+  transcript: string,
+  errorCapture?: { message: string }
+): Promise<{ script: string; styleProfile: string | null } | null> {
+  const apiKey = process.env.GEMINI_DRAFT_API_KEY;
+
+  if (!apiKey) {
+    return null;
+  }
+
+  const prompt = buildYouTubeTranscriptLearningPrompt(title, transcript);
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.7, maxOutputTokens: 3500 },
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let detail = `HTTP ${response.status}`;
+      try {
+        const parsed = JSON.parse(errorText);
+        detail = parsed?.error?.message || errorText;
+      } catch {
+        detail = errorText || detail;
+      }
+      if (errorCapture) {
+        errorCapture.message = `Gemini error (${response.status}): ${typeof detail === 'string' ? detail.slice(0, 200) : detail}`;
+      }
+      return null;
+    }
+
+    const data = await response.json();
+    const rawText = data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text || '').join('').trim();
+
+    if (!rawText) {
+      return null;
+    }
+
+    return {
+      script: normalizeGeneratedIdeaDraft(extractYouTubeScript(rawText)),
+      styleProfile: extractYouTubeStyleProfile(rawText),
+    };
+  } catch (error) {
+    console.warn('Gemini YouTube style generation request failed:', error);
+    return null;
+  }
+}
+
 async function generatePatternAppliedScriptWithProvider(
   provider: 'groq' | 'huggingface',
   patternScript: string,
@@ -950,8 +1019,62 @@ async function expandIdeaWithHuggingFace(
   }
 }
 
+async function expandIdeaWithGemini(
+  idea: string,
+  sections?: IdeaDraftRequestBody['sections'],
+  retryOptions?: { minimumWords: number; previousWordCount: number; existingDraft?: string },
+  errorCapture?: { message: string },
+  platform?: 'youtube' | 'tiktok'
+): Promise<string | null> {
+  const apiKey = process.env.GEMINI_DRAFT_API_KEY;
+
+  if (!apiKey) {
+    return null;
+  }
+
+  const prompt = buildIdeaDraftPrompt(idea, sections, retryOptions, platform);
+  const maxTokens = platform === 'tiktok' ? 600 : normalizeTargetMinutes(sections?.targetMinutes) === 20 ? 6000 : normalizeTargetMinutes(sections?.targetMinutes) === 15 ? 4500 : 3500;
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.7, maxOutputTokens: maxTokens },
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let detail = `HTTP ${response.status}`;
+      try {
+        const parsed = JSON.parse(errorText);
+        detail = parsed?.error?.message || errorText;
+      } catch {
+        detail = errorText || detail;
+      }
+      console.warn(`Gemini idea expansion failed (${response.status}):`, detail);
+      if (errorCapture) {
+        errorCapture.message = `Gemini error (${response.status}): ${typeof detail === 'string' ? detail.slice(0, 200) : detail}`;
+      }
+      return null;
+    }
+
+    const data = await response.json();
+    const text = data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text || '').join('').trim();
+    return text || null;
+  } catch (error) {
+    console.warn('Gemini idea expansion request failed:', error);
+    return null;
+  }
+}
+
 async function generateIdeaDraftWithProvider(
-  provider: 'groq' | 'huggingface',
+  provider: 'groq' | 'huggingface' | 'gemini',
   idea: string,
   sections?: IdeaDraftRequestBody['sections'],
   providerErrorCapture?: { message: string },
@@ -961,7 +1084,9 @@ async function generateIdeaDraftWithProvider(
   if (platform === 'tiktok') {
     const generatedDraft = provider === 'groq'
       ? await expandIdeaWithGroq(idea, sections, undefined, providerErrorCapture, 'tiktok')
-      : await expandIdeaWithHuggingFace(idea, sections, undefined, providerErrorCapture, 'tiktok');
+      : provider === 'gemini'
+        ? await expandIdeaWithGemini(idea, sections, undefined, providerErrorCapture, 'tiktok')
+        : await expandIdeaWithHuggingFace(idea, sections, undefined, providerErrorCapture, 'tiktok');
     return generatedDraft ? normalizeGeneratedIdeaDraft(generatedDraft) : null;
   }
 
@@ -980,7 +1105,9 @@ async function generateIdeaDraftWithProvider(
 
     const generatedDraft = provider === 'groq'
       ? await expandIdeaWithGroq(idea, sections, retryOptions, providerErrorCapture)
-      : await expandIdeaWithHuggingFace(idea, sections, retryOptions, providerErrorCapture);
+      : provider === 'gemini'
+        ? await expandIdeaWithGemini(idea, sections, retryOptions, providerErrorCapture)
+        : await expandIdeaWithHuggingFace(idea, sections, retryOptions, providerErrorCapture);
 
     if (!generatedDraft) {
       if (attempt > 1) {
@@ -1328,7 +1455,7 @@ function hasFirebaseAdminErrorCode(error: unknown, expectedCode: string): boolea
     && String((error as { code: unknown }).code).includes(expectedCode);
 }
 
-type UsageQuotaKind = 'idea' | 'draft';
+type UsageQuotaKind = 'idea' | 'draft' | 'thumbnail';
 
 type AuthAccess = {
   decodedToken: DecodedIdToken | null;
@@ -1340,7 +1467,9 @@ class UsageQuotaExceededError extends Error {
   constructor(kind: UsageQuotaKind) {
     super(kind === 'idea'
       ? 'Your monthly idea generation quota has been reached.'
-      : 'Your monthly AI draft quota has been reached.');
+      : kind === 'draft'
+        ? 'Your monthly AI draft quota has been reached.'
+        : 'Your monthly thumbnail quota has been reached.');
     this.name = 'UsageQuotaExceededError';
     this.kind = kind;
   }
@@ -1349,7 +1478,9 @@ class UsageQuotaExceededError extends Error {
 function getQuotaLimit(kind: UsageQuotaKind): number {
   const rawValue = kind === 'idea'
     ? process.env.TUBEFLOW_MONTHLY_IDEA_LIMIT
-    : process.env.TUBEFLOW_MONTHLY_DRAFT_LIMIT;
+    : kind === 'draft'
+      ? process.env.TUBEFLOW_MONTHLY_DRAFT_LIMIT
+      : process.env.TUBEFLOW_MONTHLY_THUMBNAIL_LIMIT;
   const parsedValue = Number(rawValue);
 
   if (Number.isFinite(parsedValue) && parsedValue > 0) {
@@ -1424,12 +1555,17 @@ async function consumeUserQuota(decodedToken: DecodedIdToken, kind: UsageQuotaKi
 
     const ideasThisMonth = shouldResetCounters ? 0 : Number(quota.ideasThisMonth) || 0;
     const draftsThisMonth = shouldResetCounters ? 0 : Number(quota.draftsThisMonth) || 0;
+    const thumbnailsThisMonth = shouldResetCounters ? 0 : Number(quota.thumbnailsThisMonth) || 0;
 
     if (kind === 'idea' && ideasThisMonth >= monthlyLimit) {
       throw new UsageQuotaExceededError(kind);
     }
 
     if (kind === 'draft' && draftsThisMonth >= monthlyLimit) {
+      throw new UsageQuotaExceededError(kind);
+    }
+
+    if (kind === 'thumbnail' && thumbnailsThisMonth >= monthlyLimit) {
       throw new UsageQuotaExceededError(kind);
     }
 
@@ -1440,6 +1576,7 @@ async function consumeUserQuota(decodedToken: DecodedIdToken, kind: UsageQuotaKi
       quota: {
         ideasThisMonth: kind === 'idea' ? ideasThisMonth + 1 : ideasThisMonth,
         draftsThisMonth: kind === 'draft' ? draftsThisMonth + 1 : draftsThisMonth,
+        thumbnailsThisMonth: kind === 'thumbnail' ? thumbnailsThisMonth + 1 : thumbnailsThisMonth,
         resetAt: Timestamp.fromDate(now),
       },
     }, { merge: true });
@@ -1453,7 +1590,9 @@ function isQuotaExceededError(error: unknown): error is UsageQuotaExceededError 
 function getQuotaExceededUserMessage(kind: UsageQuotaKind): string {
   return kind === 'idea'
     ? 'You\'ve hit today\'s idea generation limit. Come back tomorrow for more credits.'
-    : 'You\'ve hit today\'s AI draft limit. Come back tomorrow for more credits.';
+    : kind === 'draft'
+      ? 'You\'ve hit today\'s AI draft limit. Come back tomorrow for more credits.'
+      : 'You\'ve hit today\'s thumbnail limit. Come back tomorrow for more credits.';
 }
 
 async function deleteCollectionDocuments(firestore: Firestore, collectionPath: string): Promise<void> {
@@ -2674,7 +2813,7 @@ async function startServer() {
 
   app.post('/api/thumbnail-assistant', aiGenerationLimiter, async (req, res) => {
     try {
-      await requireAuthenticatedUserOrGuestTrial(req, 'draft');
+      await requireAuthenticatedUserOrGuestTrial(req, 'thumbnail');
 
       const { provider, userMessage, systemPrompt, apiKey } = req.body as ThumbnailAssistantRequestBody;
 
@@ -2808,32 +2947,32 @@ async function startServer() {
     // Step 2: learn the transcript's rhetorical pattern, then generate a new script from it
     const groqErrorCapture: { message: string } = { message: '' };
     const hfErrorCapture: { message: string } = { message: '' };
-    let resultProvider: 'groq' | 'huggingface' = provider;
+    const geminiErrorCapture: { message: string } = { message: '' };
+    let resultProvider: 'groq' | 'huggingface' | 'gemini' = provider;
 
-    let generatedYouTubeDraft = await generateYouTubeStyleDraftWithProvider(
-      provider,
-      title,
-      transcript,
-      provider === 'groq' ? groqErrorCapture : hfErrorCapture
-    );
+    const tryYouTubeDraft = async (p: 'groq' | 'huggingface' | 'gemini') => {
+      if (p === 'gemini') return generateYouTubeStyleDraftWithGemini(title, transcript, geminiErrorCapture);
+      return generateYouTubeStyleDraftWithProvider(p, title, transcript, p === 'groq' ? groqErrorCapture : hfErrorCapture);
+    };
+
+    let generatedYouTubeDraft = await tryYouTubeDraft(provider);
 
     if (!generatedYouTubeDraft) {
-      const fallback: 'groq' | 'huggingface' = provider === 'huggingface' ? 'groq' : 'huggingface';
-      const fallbackKeyPresent =
-        fallback === 'groq' ? !!process.env.GROQ_API_KEY : !!process.env.HUGGINGFACE_API_KEY;
-      if (fallbackKeyPresent) {
+      const allProviders: Array<'groq' | 'huggingface' | 'gemini'> = ['groq', 'huggingface', 'gemini'];
+      for (const fallback of allProviders) {
+        if (fallback === provider) continue;
+        const keyPresent = fallback === 'groq' ? !!process.env.GROQ_API_KEY
+          : fallback === 'huggingface' ? !!process.env.HUGGINGFACE_API_KEY
+          : !!process.env.GEMINI_DRAFT_API_KEY;
+        if (!keyPresent) continue;
         resultProvider = fallback;
-        generatedYouTubeDraft = await generateYouTubeStyleDraftWithProvider(
-          fallback,
-          title,
-          transcript,
-          fallback === 'groq' ? groqErrorCapture : hfErrorCapture
-        );
+        generatedYouTubeDraft = await tryYouTubeDraft(fallback);
+        if (generatedYouTubeDraft) break;
       }
     }
 
     if (!generatedYouTubeDraft) {
-      const detail = groqErrorCapture.message || hfErrorCapture.message;
+      const detail = groqErrorCapture.message || hfErrorCapture.message || geminiErrorCapture.message;
       const classified = classifyProviderError(detail || 'Failed to generate script from the video transcript.');
       return sendApiError(
         res,
@@ -3188,26 +3327,28 @@ async function startServer() {
 
       const groqErrorCapture: { message: string } = { message: '' };
       const hfErrorCapture: { message: string } = { message: '' };
+      const geminiErrorCapture: { message: string } = { message: '' };
 
-      let resultProvider: 'groq' | 'huggingface' = provider;
+      let resultProvider: 'groq' | 'huggingface' | 'gemini' = provider;
+
+      const getCapture = (p: 'groq' | 'huggingface' | 'gemini') =>
+        p === 'groq' ? groqErrorCapture : p === 'gemini' ? geminiErrorCapture : hfErrorCapture;
 
       // Try primary provider first
-      let expandedIdea = await generateIdeaDraftWithProvider(provider, idea, sections,
-        provider === 'groq' ? groqErrorCapture : hfErrorCapture,
-        platform
-      );
+      let expandedIdea = await generateIdeaDraftWithProvider(provider, idea, sections, getCapture(provider), platform);
 
-      // Fallback to the other provider if primary failed
+      // Fallback through remaining providers if primary failed
       if (!expandedIdea) {
-        const fallback: 'groq' | 'huggingface' = provider === 'huggingface' ? 'groq' : 'huggingface';
-        const fallbackKeyPresent = fallback === 'groq' ? !!process.env.GROQ_API_KEY : !!process.env.HUGGINGFACE_API_KEY;
-
-        if (fallbackKeyPresent) {
+        const allProviders: Array<'groq' | 'huggingface' | 'gemini'> = ['groq', 'huggingface', 'gemini'];
+        for (const fallback of allProviders) {
+          if (fallback === provider) continue;
+          const keyPresent = fallback === 'groq' ? !!process.env.GROQ_API_KEY
+            : fallback === 'huggingface' ? !!process.env.HUGGINGFACE_API_KEY
+            : !!process.env.GEMINI_DRAFT_API_KEY;
+          if (!keyPresent) continue;
           resultProvider = fallback;
-          expandedIdea = await generateIdeaDraftWithProvider(fallback, idea, sections,
-            fallback === 'groq' ? groqErrorCapture : hfErrorCapture,
-            platform
-          );
+          expandedIdea = await generateIdeaDraftWithProvider(fallback, idea, sections, getCapture(fallback), platform);
+          if (expandedIdea) break;
         }
       }
 
