@@ -30,6 +30,10 @@ export function getUserAvatarStoragePath(uid?: string | null): string {
   return `avatars/${getUserPathOwner(uid)}`;
 }
 
+export function getDisabledUserDocumentPath(uid?: string | null): string {
+  return `disabledUsers/${getUserPathOwner(uid)}`;
+}
+
 export function getUserDocumentRef<T = Record<string, unknown>>(
   firestore: Firestore,
   uid?: string | null,
@@ -54,6 +58,13 @@ export function getUserProjectDocumentRef<T = Record<string, unknown>>(
 
 export function getUserAvatarStorageRef(storage: FirebaseStorage, uid?: string | null): StorageReference {
   return ref(storage, getUserAvatarStoragePath(uid));
+}
+
+export function getDisabledUserDocumentRef<T = Record<string, unknown>>(
+  firestore: Firestore,
+  uid?: string | null,
+): DocumentReference<T> {
+  return doc(firestore, getDisabledUserDocumentPath(uid)) as DocumentReference<T>;
 }
 
 export function getUserScopedDownloadName(

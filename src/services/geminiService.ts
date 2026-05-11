@@ -1,18 +1,20 @@
-﻿import Groq from "groq-sdk";
+﻿import { auth } from '../firebase';
+import { readUserScopedStorageValue } from './browserStorage';
 
-const groq = new Groq({
-  apiKey: import.meta.env.VITE_GROQ_API_KEY || "",
-  dangerouslyAllowBrowser: true,
-});
+async function buildAuthenticatedHeaders(): Promise<Record<string, string>> {
+  const currentUser = auth.currentUser;
 
-async function callGroq(prompt: string, jsonMode = false): Promise<string> {
-  const completion = await groq.chat.completions.create({
-    messages: [{ role: "user", content: prompt }],
-    model: "llama-3.3-70b-versatile",
-    temperature: 0.7,
-    ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
-  });
-  return completion.choices[0]?.message?.content || "";
+  if (!currentUser) {
+    return {
+      'Content-Type': 'application/json',
+    };
+  }
+
+  const idToken = await currentUser.getIdToken(/* forceRefresh */ true);
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${idToken}`,
+  };
 }
 
 export interface ChapterEntry {
@@ -28,7 +30,15 @@ export interface ProcessingResult {
   Transcript: string;
   Chapters: ChapterEntry[];
   Summary: string;
+  styleProfile?: string;
+  sourceTitle?: string;
 }
+
+export interface PatternAppliedScriptResponse {
+  script: string;
+}
+
+export type ScriptDurationOption = 8 | 10 | 15 | 20;
 
 type ApiErrorResponse = {
   code?: string;
@@ -41,7 +51,7 @@ function inferFriendlyMessage(code: string | undefined, rawMessage: string, fall
   const normalizedMessage = rawMessage.trim().toLowerCase();
 
   if (normalizedCode === 'quota_exceeded' || normalizedMessage.includes('credit') || normalizedMessage.includes('quota')) {
-    return 'This AI provider has used up its credits for now. Please come back later or switch to another provider.';
+    return 'You\'ve hit today\'s usage limit. Come back tomorrow for more credits, or switch to another provider.';
   }
 
   if (normalizedCode === 'timeout' || normalizedMessage.includes('timeout') || normalizedMessage.includes('timed out')) {
@@ -120,6 +130,8 @@ function normalizeBackendScriptResult(result: ComprehensiveResult): ProcessingRe
     Summary: typeof result.Summary === 'string'
       ? result.Summary
       : [result.Summary?.short, result.Summary?.long].filter(Boolean).join('\n\n'),
+    styleProfile: undefined,
+    sourceTitle: undefined,
   };
 }
 
@@ -179,6 +191,29 @@ export interface IdeaDraftResponse {
     }>;
   };
   source: 'local-nlp' | 'huggingface' | 'groq';
+  seo?: {
+    titles: string[];
+    description: string;
+    tags: string[];
+    thumbnailConcepts: string[];
+  } | null;
+}
+
+export interface UrlPatternAnalysis {
+  hookFormula: string;
+  retentionLoops: string[];
+  transitionPhrases: string[];
+  exampleStructure: string;
+  ctaStyle: string;
+  pacingBlueprint: string;
+  keywordStrategy: string[];
+  powerWords: string[];
+  styleProfile: string;
+  applicableTemplate: string;
+  sourceTitle: string;
+  patternContent: string;
+  suggestedName: string;
+  transcript?: string;
 }
 
 export interface IdeaDraftRequest {
@@ -204,7 +239,9 @@ export async function processUserScript(
   try {
     const response = await fetch('/api/process/script', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify({ script, subject })
     });
 
@@ -219,10 +256,41 @@ export async function processUserScript(
   }
 }
 
+export async function applyPatternToScript(
+  patternScript: string,
+  userScript: string,
+  targetMinutes: ScriptDurationOption
+): Promise<PatternAppliedScriptResponse> {
+  try {
+    const headers = await buildAuthenticatedHeaders();
+    const currentUser = auth.currentUser;
+    const response = await fetch('/api/script/apply-pattern', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        patternScript,
+        userScript,
+        targetMinutes,
+        apiKey: currentUser ? readUserScopedStorageValue('app_groq_key', currentUser.uid) || '' : '',
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(await extractApiErrorMessage(response, 'We could not apply that pattern right now. Please try again in a moment.'));
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error('Error applying pattern to script:', error);
+    throw error;
+  }
+}
+
 export async function generateIdeaDraft(payload: IdeaDraftRequest): Promise<IdeaDraftResponse> {
+  const headers = await buildAuthenticatedHeaders();
   const response = await fetch('/api/process/idea-draft', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(payload)
   });
 
@@ -240,9 +308,10 @@ export async function generateIdeaDraft(payload: IdeaDraftRequest): Promise<Idea
  * Generates transcript, chapters, and summary for a YouTube URL
  */
 export async function processYouTubeUrl(url: string): Promise<ProcessingResult> {
+  const headers = await buildAuthenticatedHeaders();
   const response = await fetch('/api/youtube-to-script', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ url }),
   });
 
@@ -264,6 +333,8 @@ export async function processYouTubeUrl(url: string): Promise<ProcessingResult> 
     Transcript: typeof data.draft === 'string' ? data.draft : '',
     Chapters: Array.isArray(data.outline) ? buildChapterEntries(data.outline) : [],
     Summary: summary,
+    styleProfile: typeof data.styleProfile === 'string' ? data.styleProfile : undefined,
+    sourceTitle: typeof data.sourceTitle === 'string' ? data.sourceTitle : undefined,
   };
 }
 
@@ -271,57 +342,27 @@ export async function processYouTubeUrl(url: string): Promise<ProcessingResult> 
  * Unified function to process user-uploaded scripts (text content)
  * Generates transcript, chapters, and summary for provided text/script content
  */
-export async function processUploadedScript(scriptContent: string): Promise<ProcessingResult> {
-  try {
-    const prompt = `You have been provided with the following script/text content:
+export async function analyzeUrlAsPattern(url: string): Promise<UrlPatternAnalysis> {
+  const headers = await buildAuthenticatedHeaders();
+  const response = await fetch('/api/script/analyze-url', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ url }),
+  });
 
-"${scriptContent}"
+  if (!response.ok) {
+    throw new Error(await extractApiErrorMessage(response, 'We could not analyze that video right now. Please try again in a moment.'));
+  }
 
-Analyze this content and return ONLY valid JSON (no markdown, no code blocks) with this exact structure:
-{
-  "Transcript": "A refined and properly formatted transcript of the script. Add timestamps every 30-60 seconds. Maintain the original dialogue and narration structure.",
-  "Chapters": [
-    { "id": "ch-1", "title": "Descriptive Title Based on Content", "timestamp": "00:00", "timeLabel": "00:00 → 02:30", "chapterName": "Descriptive Title Based on Content", "summary": "Brief 1-2 sentence summary of what happens in this section." },
-    { "id": "ch-2", "title": "Next Section Title", "timestamp": "02:30", "timeLabel": "02:30 → 05:15", "chapterName": "Next Section Title", "summary": "Brief summary of this section." }
-  ],
-  "Summary": "A comprehensive 2-3 paragraph summary of the script's main content, key ideas, and takeaways."
+  return await response.json();
 }
 
-Ensure:
-- Transcript includes realistic timestamps at logical break points
-- Each Chapter is a JSON object with id, title, timestamp, timeLabel, chapterName, and summary
-- Chapter titles must be descriptive and specific to the content (not generic like "Introduction" or "Section 1")
-- timeLabel shows the minute range (e.g. "00:00 → 02:30")
-- summary is a short 1-2 sentence description of what happens in that part
-- Summary accurately captures the essence of the content
-- All fields are substantive and well-written`;
-
-    const text = await callGroq(prompt, true);
-    const result = JSON.parse(text || "{}");
-    const rawChapters = Array.isArray(result.Chapters) ? result.Chapters : [];
-    const normalizedResult: ProcessingResult = {
-      Transcript: result.Transcript || "",
-      Chapters: rawChapters.length > 0 && typeof rawChapters[0] === 'object'
-        ? rawChapters.map((ch: any, idx: number) => ({
-            id: ch.id || `ch-${idx + 1}`,
-            title: ch.title || ch.chapterName || `Chapter ${idx + 1}`,
-            timestamp: ch.timestamp || '00:00',
-            timeLabel: ch.timeLabel || ch.timestamp || '00:00',
-            chapterName: ch.chapterName || ch.title || `Chapter ${idx + 1}`,
-            summary: ch.summary || '',
-          }))
-        : buildChapterEntries(rawChapters),
-      Summary: result.Summary || ""
-    };
-
-    if (!normalizedResult.Transcript && normalizedResult.Chapters.length === 0 && !normalizedResult.Summary) {
-      throw new Error('Empty Groq script response');
-    }
-
-    return normalizedResult;
-  } catch (error) {
-    console.warn('Falling back to backend script processor:', error);
+export async function processUploadedScript(scriptContent: string): Promise<ProcessingResult> {
+  try {
     const backendResult = await processUserScript(scriptContent);
     return normalizeBackendScriptResult(backendResult);
+  } catch (error) {
+    console.error('Error processing uploaded script:', error);
+    throw error;
   }
 }

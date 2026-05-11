@@ -6,9 +6,37 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { AppSettings } from './appSettings';
-import { getUserDocumentRef } from './userPaths';
+import { removeManyUserScopedStorageValues } from './browserStorage';
+import type { DisabledUserRecord } from '../types/firestore';
+import {
+  getDisabledUserDocumentRef,
+  getUserDocumentRef,
+} from './userPaths';
 
 const ref = (uid: string) => getUserDocumentRef(db, uid);
+const disabledRef = (uid: string) => getDisabledUserDocumentRef<DisabledUserRecord>(db, uid);
+
+const USER_SCOPED_LOCAL_KEYS = [
+  'app_gemini_key',
+  'app_youtube_key',
+  'app_groq_key',
+  'tubeflow_pw_hash',
+  'tubeflow_settings',
+] as const;
+
+export async function getDisabledUserRecord(uid: string): Promise<DisabledUserRecord | null> {
+  const snap = await getDoc(disabledRef(uid));
+  if (!snap.exists()) {
+    return null;
+  }
+
+  return snap.data() as DisabledUserRecord;
+}
+
+export async function isUserDisabled(uid: string): Promise<boolean> {
+  const disabledRecord = await getDisabledUserRecord(uid);
+  return Boolean(disabledRecord);
+}
 
 /**
  * Create a Firestore profile doc on first sign-up.
@@ -20,6 +48,10 @@ export async function createUserProfile(
   displayName: string,
   photoURL?: string,
 ): Promise<void> {
+  if (await isUserDisabled(uid)) {
+    throw new Error('This account has been disabled and its data was deleted. Contact support if you need it restored.');
+  }
+
   const snap = await getDoc(ref(uid));
   if (snap.exists()) return;
 
@@ -37,6 +69,7 @@ export async function createUserProfile(
     quota: {
       ideasThisMonth: 0,
       draftsThisMonth: 0,
+      thumbnailsThisMonth: 0,
       resetAt: serverTimestamp(),
     },
   });
@@ -61,5 +94,9 @@ export async function getUserAppSettings(uid: string): Promise<AppSettings | nul
 
 export async function saveUserAppSettings(uid: string, settings: AppSettings): Promise<void> {
   await setDoc(ref(uid), { appSettings: settings }, { merge: true });
+}
+
+export function clearDeletedUserLocalData(uid: string): void {
+  removeManyUserScopedStorageValues([...USER_SCOPED_LOCAL_KEYS], uid);
 }
 

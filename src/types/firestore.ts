@@ -16,8 +16,27 @@ export interface UserProfile {
   quota: {
     ideasThisMonth: number;
     draftsThisMonth: number;
+    thumbnailsThisMonth: number;
     resetAt: Timestamp;
   };
+}
+
+export interface DisabledUserRecord {
+  uid: string;
+  email: string;
+  displayName: string;
+  authRetention: 'firebase-auth-retained';
+  status: 'deleting' | 'disabled';
+  disabledAt: Timestamp;
+  dataPurgedAt?: Timestamp;
+}
+
+export interface MaintenanceConfigDocument {
+  isMaintenanceMode?: boolean;
+  title?: string;
+  subtitle?: string;
+  date?: string;
+  lastUpdatedAt?: Timestamp;
 }
 
 // ─── users/{userId}/projects/{projectId} ─────────────────────────────────────

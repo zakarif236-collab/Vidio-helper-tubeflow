@@ -44,3 +44,7 @@ export function writeUserScopedStorageValue(key: string, value: string, uid?: st
 export function removeUserScopedStorageValue(key: string, uid?: string | null): void {
   removeBrowserStorageValue(getUserScopedStorageKey(key, uid));
 }
+
+export function removeManyUserScopedStorageValues(keys: string[], uid?: string | null): void {
+  keys.forEach((key) => removeUserScopedStorageValue(key, uid));
+}

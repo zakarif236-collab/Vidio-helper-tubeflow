@@ -10,11 +10,13 @@
     "preview": "vite preview",
     "clean": "rimraf dist",
     "kill": "node ./scripts/stop-firebase-emulators.mjs",
+    "seed:maintenance": "node ./scripts/seed-maintenance-config.mjs",
+    "seed:maintenance:emulator": "set FIRESTORE_EMULATOR_HOST=127.0.0.1:8081&& node ./scripts/seed-maintenance-config.mjs",
     "lint": "npm run lint:browser-storage && tsc --noEmit",
     "lint:browser-storage": "node ./scripts/check-browser-storage.mjs",
     "preemulators": "npm run kill",
-    "emulators": "firebase emulators:start --only auth,firestore,storage",
-    "emulators:restart": "npm run kill && firebase emulators:start --only auth,firestore,storage"
+    "emulators": "node ./scripts/start-firebase-emulators.mjs",
+    "emulators:restart": "npm run kill && node ./scripts/start-firebase-emulators.mjs"
   },
   "dependencies": {
     "@distube/ytdl-core": "^4.16.12",
@@ -24,6 +26,7 @@
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "firebase": "^12.11.0",
+    "firebase-admin": "^13.8.0",
     "groq-sdk": "^1.1.2",
     "konva": "^10.2.3",
     "lucide-react": "^0.546.0",

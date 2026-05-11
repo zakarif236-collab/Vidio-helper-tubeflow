@@ -13,6 +13,7 @@ export interface AppSettings {
     autoCopy: boolean;
     showWordCount: boolean;
     outputDetail: 'concise' | 'standard' | 'detailed';
+    thumbnailAssistantProvider: 'groq' | 'gemini';
   };
   privacy: {
     shareAnalytics: boolean;
@@ -23,7 +24,7 @@ export interface AppSettings {
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   general: { darkMode: true, autoSave: true, showHints: true },
   notifications: { processingComplete: true, email: false, sound: true },
-  ai: { autoCopy: false, showWordCount: true, outputDetail: 'standard' },
+  ai: { autoCopy: false, showWordCount: true, outputDetail: 'standard', thumbnailAssistantProvider: 'groq' },
   privacy: { shareAnalytics: true, storeHistory: true },
 };
 
