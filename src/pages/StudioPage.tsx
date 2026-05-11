@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react';
+﻿import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Youtube,
@@ -32,9 +32,15 @@ import {
   TrendingUp,
   FolderOpen,
   GripVertical,
+  Search,
+  Tag,
+  BookOpen,
+  Link2,
+  Dna,
+  HelpCircle,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { applyPatternToScript, generateIdeaDraft, IdeaDraftResponse, processYouTubeUrl, processUploadedScript, ProcessingResult } from '../services/geminiService';
+import { analyzeUrlAsPattern, applyPatternToScript, generateIdeaDraft, IdeaDraftResponse, processYouTubeUrl, processUploadedScript, ProcessingResult, type ScriptDurationOption, UrlPatternAnalysis } from '../services/geminiService';
 import { buildDefaultPatternName, createSavedPattern, listSavedPatterns, type SavedPattern, updateSavedPattern } from '../services/patternService';
 import { saveProject, updateProject } from '../services/projectService';
 import { getUserScopedStorageKey, readBrowserStorageValue, writeBrowserStorageValue } from '../services/browserStorage';
@@ -92,6 +98,17 @@ interface ResultPanelProps {
   onCopy?: (text: string, field: string) => void;
   children: ReactNode;
   panelRef?: Ref<HTMLDivElement>;
+}
+
+function PatternDnaRow({ label, icon, value }: { label: string; icon: ReactNode; value: string }) {
+  return (
+    <div>
+      <p className="text-xs font-semibold text-slate-400 mb-0.5 flex items-center gap-1.5">
+        {icon} {label}
+      </p>
+      <p className="text-xs text-slate-300 pl-3 border-l border-violet-500/30">{value}</p>
+    </div>
+  );
 }
 
 function ResultPanel({
@@ -342,6 +359,7 @@ const CREATOR_STORIES = [
 ] as const;
 
 const ANALYTICS_STORAGE_KEY_PREFIX = 'tubeflow.analytics.v1';
+const PATTERN_SCRIPT_DURATION_OPTIONS: ScriptDurationOption[] = [8, 10, 15, 20];
 
 const DEFAULT_IDEA_SECTIONS = {
   introduction: '',
@@ -982,6 +1000,7 @@ const StudioPage = () => {
   const [patterns, setPatterns] = useState<SavedPattern[]>([]);
   const [patternStatus, setPatternStatus] = useState<string | null>(null);
   const [patternDropActive, setPatternDropActive] = useState(false);
+  const [patternScriptDuration, setPatternScriptDuration] = useState<ScriptDurationOption>(15);
   const [applyingPattern, setApplyingPattern] = useState(false);
   const [loading, setLoading] = useState(false);
   const [resultSource, setResultSource] = useState<'youtube' | 'script' | null>(null);
@@ -993,6 +1012,11 @@ const StudioPage = () => {
   const [ideaInput, setIdeaInput] = useState('');
   const [ideaLoading, setIdeaLoading] = useState(false);
   const [ideaDraftMeta, setIdeaDraftMeta] = useState<IdeaDraftResponse | null>(null);
+  const [urlPatternAnalysis, setUrlPatternAnalysis] = useState<UrlPatternAnalysis | null>(null);
+  const [isAnalyzingPattern, setIsAnalyzingPattern] = useState(false);
+  const [patternAnalysisError, setPatternAnalysisError] = useState<string | null>(null);
+  const [patternSavedFromUrl, setPatternSavedFromUrl] = useState(false);
+  const [urlPatternSaveNotice, setUrlPatternSaveNotice] = useState<string | null>(null);
   const [ideaSections, setIdeaSections] = useState(DEFAULT_IDEA_SECTIONS);
   const [ideaPlatform, setIdeaPlatform] = useState<'youtube' | 'tiktok'>('youtube');
   const [selectedStylePreset, setSelectedStylePreset] = useState<(typeof STYLE_PRESETS)[number]['id']>('educational');
@@ -1298,10 +1322,10 @@ const StudioPage = () => {
 
     setPatternDropActive(false);
     setApplyingPattern(true);
-    setPatternStatus('Applying pattern logic to your draft...');
+    setPatternStatus(`Applying pattern logic to your draft as a ${patternScriptDuration}m YouTube script...`);
     setError('');
 
-    void applyPatternToScript(trimmedPattern, trimmedCurrent)
+    void applyPatternToScript(trimmedPattern, trimmedCurrent, patternScriptDuration)
       .then((result) => {
         const improvedScript = result.script.trim();
         if (!improvedScript) {
@@ -1390,6 +1414,88 @@ const StudioPage = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleAnalyzeUrlAsPattern = async () => {
+    if (!youtubeUrl.trim()) {
+      setPatternAnalysisError('Please enter a YouTube URL first.');
+      return;
+    }
+    setIsAnalyzingPattern(true);
+    setPatternAnalysisError(null);
+    setUrlPatternAnalysis(null);
+    setPatternSavedFromUrl(false);
+    setUrlPatternSaveNotice(null);
+    try {
+      const [patternResult, processedResult] = await Promise.allSettled([
+        analyzeUrlAsPattern(youtubeUrl),
+        processYouTubeUrl(youtubeUrl),
+      ]);
+
+      const getSettledErrorMessage = (reason: unknown, fallback: string): string => {
+        if (reason instanceof Error && reason.message.trim()) {
+          return reason.message.trim();
+        }
+        return fallback;
+      };
+
+      if (patternResult.status === 'fulfilled') {
+        setUrlPatternAnalysis(patternResult.value);
+      }
+
+      if (processedResult.status === 'fulfilled') {
+        setResultSource('youtube');
+        setOpenResultPanels([]);
+        setResults(processedResult.value);
+        setDerivedResults(buildDerivedResults(processedResult.value));
+        setHasSavedYoutubePattern(false);
+        trackAnalytics('generated');
+        setError('');
+      }
+
+      if (patternResult.status === 'rejected' && processedResult.status === 'rejected') {
+        const patternMessage = getSettledErrorMessage(
+          patternResult.reason,
+          'Pattern analysis failed. Please try again.'
+        );
+        const processMessage = getSettledErrorMessage(
+          processedResult.reason,
+          'Script package generation failed. Please try again.'
+        );
+
+        if (patternMessage === processMessage) {
+          throw new Error(patternMessage);
+        }
+
+        throw new Error(`Pattern analysis failed: ${patternMessage} Script package generation failed: ${processMessage}`);
+      }
+
+      if (patternResult.status === 'fulfilled' && processedResult.status === 'rejected') {
+        const processMessage = getSettledErrorMessage(
+          processedResult.reason,
+          'Failed to generate script package for the right panel.'
+        );
+        setPatternAnalysisError(`Pattern extracted, but script generation failed: ${processMessage}`);
+      }
+    } catch (err) {
+      setPatternAnalysisError(err instanceof Error ? err.message : 'Failed to analyze that video. Please try again.');
+    } finally {
+      setIsAnalyzingPattern(false);
+    }
+  };
+
+  const handleSaveUrlPattern = () => {
+    if (!urlPatternAnalysis) return;
+    createSavedPattern(user?.uid, {
+      name: urlPatternAnalysis.suggestedName || `URL Pattern`,
+      tags: urlPatternAnalysis.keywordStrategy?.slice(0, 5) ?? [],
+      content: urlPatternAnalysis.patternContent,
+      source: 'youtube',
+    });
+    setPatterns(listSavedPatterns(user?.uid));
+    setPatternSavedFromUrl(true);
+    setUrlPatternSaveNotice('Pattern saved');
+    window.setTimeout(() => setUrlPatternSaveNotice(null), 1800);
   };
 
   const handleProcessScript = async () => {
@@ -1664,30 +1770,43 @@ const StudioPage = () => {
           {/* Hero badge */}
           <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-4 py-1.5 mb-5">
             <Zap className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="text-xs font-semibold text-emerald-300 tracking-wide">AI-Powered Content Suite</span>
+            <span className="text-xs font-semibold text-emerald-300 tracking-wide">Powered by KS Group</span>
           </div>
           <h1 className="text-5xl font-black mb-3 tracking-tight leading-[1.1]">
             <span className="studio-gradient-text">Your Idea</span>{' '}
             <span className="text-white">Becomes a Full Video</span>
           </h1>
           <p className="text-slate-300 text-base max-w-2xl leading-relaxed">
-            One click turns your rough concept into a polished YouTube or TikTok video workflow: script, chapters, highlights, SEO, captions, and share-ready upload copy.
+            One click turns your rough concept into a full 10–20 minute script — complete with a powerful hook, SEO bundle, chapters, captions, and more.
           </p>
-          <p className="mt-4 text-slate-400 text-sm max-w-2xl leading-relaxed">
-            VideoHelper is the creator’s smartest studio — built to turn every idea into a higher-performing video, faster.
+          <p className="mt-3 text-slate-300 text-base max-w-2xl leading-relaxed">
+            Drop any YouTube link and our AI reads the video, detects the script structure, and saves it as your own reusable pattern — so you can generate new scripts in your style, fast.
           </p>
+          <div className="mt-4 inline-flex max-w-2xl items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs leading-relaxed text-slate-400">
+            <span>Copyright © King Slayer Entertainment. Use of TubeFlow is subject to our Terms & Privacy Policy.</span>
+            <button
+              type="button"
+              onClick={() => navigate('/settings?tab=privacy')}
+              className="font-semibold text-emerald-300 transition-colors hover:text-emerald-200"
+            >
+              View terms
+            </button>
+          </div>
 
         </motion.div>
 
+        {/* Idea CTA — above tabs so users encounter it first */}
+        <button
+          onClick={() => setIsIdeaModalOpen(true)}
+          className="idea-led-button mb-4 w-fit flex items-center gap-3 rounded-2xl border border-amber-500/40 bg-gradient-to-r from-amber-500/15 to-slate-900/80 px-5 py-3 text-sm font-semibold text-amber-200 transition-all hover:border-amber-400/60 hover:from-amber-500/22 hover:to-black"
+        >
+          <Lightbulb className="idea-lamp-icon w-4 h-4 text-amber-300" />
+          <span>✨ Don't have a URL? <span className="underline underline-offset-2">Start from an Idea</span></span>
+          <span className="ml-1 rounded-full bg-amber-500/25 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-amber-300">NEW</span>
+        </button>
+
         {/* Tab Navigation */}
         <div className="flex gap-1 mb-8 bg-white/[0.03] border border-white/8 rounded-2xl p-1.5 w-fit">
-          <button
-            onClick={() => setIsIdeaModalOpen(true)}
-            className="idea-led-button flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all border border-blue-500/35 bg-gradient-to-r from-blue-600/30 to-slate-950/80 text-blue-200 hover:border-blue-400/55 hover:from-blue-500/35 hover:to-black"
-          >
-            <Lightbulb className="idea-lamp-icon w-4 h-4" />
-            ✨ Idea
-          </button>
           <button
             onClick={() => setActiveTab('youtube')}
             className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all ${
@@ -1739,6 +1858,9 @@ const StudioPage = () => {
 
               {activeTab === 'youtube' ? (
                 <div>
+                  <p className="mb-3 text-xs text-slate-500">
+                    No URL? <button onClick={() => setIsIdeaModalOpen(true)} className="text-amber-400 hover:text-amber-300 underline underline-offset-2 font-semibold transition-colors">✨ Generate from an Idea</button> instead.
+                  </p>
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <label className="block text-sm font-semibold text-slate-200">
                       YouTube URL
@@ -1754,24 +1876,82 @@ const StudioPage = () => {
                     />
                   </div>
                   <button
-                    onClick={handleProcessYouTube}
-                    disabled={loading}
-                    className="w-full mt-4 px-4 py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 disabled:from-slate-700 disabled:to-slate-700 text-white font-bold rounded-xl transition-all shadow-lg shadow-emerald-500/20 disabled:shadow-none flex items-center justify-center gap-2"
+                    onClick={handleAnalyzeUrlAsPattern}
+                    disabled={isAnalyzingPattern || loading}
+                    className="w-full mt-4 px-4 py-3 bg-gradient-to-r from-violet-600 to-violet-700 hover:from-violet-500 hover:to-violet-600 disabled:from-slate-700 disabled:to-slate-700 text-white font-bold rounded-xl transition-all shadow-lg shadow-violet-500/20 disabled:shadow-none flex items-center justify-center gap-2"
                   >
-                    {loading ? (
+                    {isAnalyzingPattern ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        Processing...
+                        Analyzing + generating script...
                       </>
                     ) : (
                       <>
-                        <Youtube className="w-4 h-4" />
-                        Process YouTube
+                        <Dna className="w-4 h-4 text-violet-400" />
+                        Analyze as Script Pattern
                       </>
                     )}
                   </button>
+                  {patternAnalysisError && (
+                    <p className="mt-2 text-xs text-red-400 flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                      {patternAnalysisError}
+                    </p>
+                  )}
+                  {urlPatternAnalysis && (
+                    <div className="mt-4 rounded-xl border border-violet-500/30 bg-violet-500/5 p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <Dna className="w-4 h-4 text-violet-400" />
+                          <span className="text-sm font-bold text-violet-300">Pattern DNA Extracted</span>
+                        </div>
+                        {!patternSavedFromUrl && (
+                          <button
+                            onClick={handleSaveUrlPattern}
+                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition-all bg-violet-600 hover:bg-violet-500 text-white"
+                          >
+                            <><BookOpen className="w-3.5 h-3.5" /> Save to Pattern Library</>
+                          </button>
+                        )}
+                      </div>
+                      {urlPatternSaveNotice && (
+                        <p className="text-xs text-emerald-300 inline-flex items-center gap-1.5">
+                          <CircleCheckBig className="w-3.5 h-3.5" />
+                          {urlPatternSaveNotice}
+                        </p>
+                      )}
+                      <p className="text-xs text-slate-400 italic">
+                        <span className="font-semibold text-slate-300">Source:</span> {urlPatternAnalysis.sourceTitle}
+                      </p>
+                      <div className="space-y-2">
+                        <PatternDnaRow label="Style" icon={<Sparkles className="w-3.5 h-3.5" />} value={urlPatternAnalysis.styleProfile} />
+                        <PatternDnaRow label="Hook Formula" icon={<Zap className="w-3.5 h-3.5" />} value={urlPatternAnalysis.hookFormula} />
+                        <PatternDnaRow label="CTA Style" icon={<Target className="w-3.5 h-3.5" />} value={urlPatternAnalysis.ctaStyle} />
+                        <PatternDnaRow label="Pacing" icon={<Clock3 className="w-3.5 h-3.5" />} value={urlPatternAnalysis.pacingBlueprint} />
+                        {urlPatternAnalysis.retentionLoops?.length > 0 && (
+                          <div>
+                            <p className="text-xs font-semibold text-slate-400 mb-1 flex items-center gap-1.5">
+                              <TrendingUp className="w-3.5 h-3.5" /> Retention Loops
+                            </p>
+                            <ul className="space-y-0.5">
+                              {urlPatternAnalysis.retentionLoops.slice(0, 3).map((loop, i) => (
+                                <li key={i} className="text-xs text-slate-300 pl-3 border-l border-violet-500/30">{loop}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {urlPatternAnalysis.powerWords?.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 mt-1">
+                            {urlPatternAnalysis.powerWords.slice(0, 8).map((word, i) => (
+                              <span key={i} className="px-2 py-0.5 rounded-full bg-violet-500/15 border border-violet-500/25 text-violet-300 text-xs">{word}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   <p className="mt-3 text-xs text-slate-500">
-                    Or use ✨ Idea to generate a YouTube or TikTok draft and continue in the Script Text tab.
+                    Or <button onClick={() => setIsIdeaModalOpen(true)} className="text-amber-400 hover:text-amber-300 underline underline-offset-2 font-semibold transition-colors">✨ Start from an Idea</button> to generate a YouTube or TikTok draft first.
                   </p>
                 </div>
               ) : (
@@ -1815,10 +1995,37 @@ const StudioPage = () => {
                       }`}
                     />
                   </div>
+                  <div className="mt-4 rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-amber-100">YouTube Script Duration</p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          Used when a saved YouTube pattern rewrites your draft.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {PATTERN_SCRIPT_DURATION_OPTIONS.map((minutes) => (
+                          <button
+                            key={minutes}
+                            type="button"
+                            onClick={() => setPatternScriptDuration(minutes)}
+                            disabled={applyingPattern}
+                            className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-all ${
+                              patternScriptDuration === minutes
+                                ? 'border border-amber-300/70 bg-amber-400/20 text-amber-100 shadow-[0_0_0_1px_rgba(252,211,77,0.18)]'
+                                : 'border border-white/10 bg-white/5 text-slate-300 hover:border-amber-400/30 hover:text-white'
+                            }`}
+                          >
+                            {minutes}m
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                   <p className="mt-3 text-xs text-slate-500">
                     {applyingPattern
                       ? 'Applying the dropped pattern logic to your draft now. This rewrites the current script instead of appending the pattern text.'
-                      : 'Use ✨ Idea to turn a short concept into an editable YouTube or TikTok draft, then refine it here. Saved patterns below only come from the YouTube URL workflow.'}
+                      : `Use ✨ Idea to turn a short concept into an editable YouTube or TikTok draft, then refine it here. Saved patterns below only come from the YouTube URL workflow. Pattern rewrites currently target ${patternScriptDuration}m.`}
                   </p>
                   <div className="mt-4 rounded-2xl border border-cyan-500/20 bg-gradient-to-br from-cyan-500/10 to-slate-950/90 p-4">
                     <div className="flex items-start justify-between gap-3">
@@ -1974,6 +2181,46 @@ const StudioPage = () => {
                           {ideaDraftMeta.validation.issues.map((issue) => (
                             <p key={issue}>{issue}</p>
                           ))}
+                        </div>
+                      )}
+                      {ideaDraftMeta.seo && (
+                        <div className="mt-4 rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-4 space-y-3">
+                          <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-300 flex items-center gap-1.5">
+                            <TrendingUp className="w-3.5 h-3.5" /> SEO Bundle
+                          </p>
+                          <div>
+                            <p className="text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1.5"><FileText className="w-3 h-3" /> Title Options</p>
+                            <ul className="space-y-1">
+                              {ideaDraftMeta.seo.titles.map((t, i) => (
+                                <li key={i} className="text-xs text-slate-200 flex items-start gap-2">
+                                  <span className="shrink-0 text-emerald-400 font-bold">{i + 1}.</span>
+                                  {t}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                          <div>
+                            <p className="text-xs font-semibold text-slate-400 mb-1 flex items-center gap-1.5"><Hash className="w-3 h-3" /> Tags</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {ideaDraftMeta.seo.tags.map((tag, i) => (
+                                <span key={i} className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/25 text-emerald-300 text-xs">{tag}</span>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <p className="text-xs font-semibold text-slate-400 mb-1 flex items-center gap-1.5"><FileText className="w-3 h-3" /> Description</p>
+                            <p className="text-xs text-slate-300 whitespace-pre-line">{ideaDraftMeta.seo.description}</p>
+                          </div>
+                          {ideaDraftMeta.seo.thumbnailConcepts?.length > 0 && (
+                            <div>
+                              <p className="text-xs font-semibold text-slate-400 mb-1 flex items-center gap-1.5"><Lightbulb className="w-3 h-3" /> Thumbnail Concepts</p>
+                              <ul className="space-y-0.5">
+                                {ideaDraftMeta.seo.thumbnailConcepts.map((concept, i) => (
+                                  <li key={i} className="text-xs text-slate-300">• {concept}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -2729,6 +2976,38 @@ const StudioPage = () => {
               </div>
             ) : loading ? (
               <LoadingMiniGame message="Processing content…" color="emerald" />
+            ) : isAnalyzingPattern ? (
+              <LoadingMiniGame message="Analyzing pattern DNA…" color="purple" />
+            ) : urlPatternAnalysis ? (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="space-y-4"
+              >
+                {/* Pattern DNA summary */}
+                <div className="rounded-2xl border border-violet-500/25 bg-gradient-to-r from-violet-500/10 via-fuchsia-500/5 to-transparent p-4">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Dna className="w-4 h-4 text-violet-400" />
+                    <p className="text-sm font-bold text-violet-300">Pattern DNA Extracted</p>
+                  </div>
+                  <p className="text-xs text-slate-400 italic">
+                    <span className="font-semibold text-slate-300">Source:</span> {urlPatternAnalysis.sourceTitle}
+                  </p>
+                </div>
+
+                {/* Video script / transcript */}
+                {urlPatternAnalysis.transcript && (
+                  <div className="rounded-2xl border border-white/10 bg-black/20 p-4 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-emerald-400" />
+                      <p className="text-sm font-bold text-white">Video Script</p>
+                    </div>
+                    <pre className="text-xs text-slate-300 whitespace-pre-wrap leading-relaxed max-h-[60vh] overflow-y-auto pr-1">
+                      {urlPatternAnalysis.transcript}
+                    </pre>
+                  </div>
+                )}
+              </motion.div>
             ) : (
               <motion.div
                 initial={{ opacity: 0 }}
@@ -2817,7 +3096,6 @@ const StudioPage = () => {
             <div>
               <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">Success stories</p>
               <h3 className="mt-1 text-xl font-bold text-white">Creators shipping faster with TubeFlow</h3>
-                  ) : (
                     <div className="mx-auto mt-5 max-w-md rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-left">
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-emerald-300">
                         How script mode works
@@ -2915,6 +3193,33 @@ const StudioPage = () => {
             );
           })}
         </motion.div>
+      </div>
+
+      <div className="relative z-10 border-t border-white/8 bg-black/20 px-6 py-4">
+        <div className="mx-auto flex max-w-6xl flex-col gap-3 text-center text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between sm:text-left">
+          <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
+            <span>Copyright © King Slayer Entertainment.</span>
+            <span className="hidden sm:inline">•</span>
+            <span>All rights reserved.</span>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-end">
+            <button
+              type="button"
+              onClick={() => navigate('/settings?tab=help')}
+              className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 font-semibold text-emerald-300 transition-colors hover:border-emerald-400/30 hover:bg-emerald-500/10 hover:text-emerald-200"
+            >
+              <HelpCircle className="h-3.5 w-3.5" />
+              Help Center
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/settings?tab=privacy')}
+              className="font-semibold text-emerald-300 transition-colors hover:text-emerald-200"
+            >
+              Terms & Privacy
+            </button>
+          </div>
+        </div>
       </div>
 
       {isIdeaModalOpen && (

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Settings,
   Bell,
@@ -22,6 +22,7 @@ import {
   Trash2,
   Users,
   HelpCircle,
+  Search,
   Clipboard,
   Hash,
   Sparkles,
@@ -41,8 +42,115 @@ import {
   DEFAULT_APP_SETTINGS,
 } from '../services/appSettings';
 
+type SettingsTabId = 'general' | 'notifications' | 'ai' | 'help' | 'privacy' | 'account';
+
+const SETTINGS_TAB_IDS: SettingsTabId[] = ['general', 'notifications', 'ai', 'help', 'privacy', 'account'];
+
+type HelpCenterSection = {
+  title: string;
+  summary: string;
+  icon: React.ElementType;
+  keywords: string[];
+  points: string[];
+};
+
+const HELP_CENTER_SECTIONS: HelpCenterSection[] = [
+  {
+    title: 'Frequently Asked Questions',
+    summary: 'Fast support answers for the questions creators ask every day.',
+    icon: HelpCircle,
+    keywords: ['faq', 'questions', 'basics', 'tubeflow', 'failed generating', 'error'],
+    points: [
+      'Q: Why is Generate not returning anything? A: Confirm at least one provider key is saved in Privacy > Manage API Keys, then run Process Script again.',
+      'Q: Why are my chapter, SEO, or caption tools disabled? A: Those tools unlock only after a successful processing step creates script analysis output.',
+      'Q: Why did my YouTube URL fail? A: Use a public video URL with transcript availability and retry from YouTube mode.',
+      'Q: Where are my saved projects? A: Sign in with the same account; synced projects are linked to your Firebase user profile.',
+      'Q: Is my API key uploaded to your servers? A: No. TubeFlow stores keys in browser storage and uses them from your active session.',
+    ],
+  },
+  {
+    title: 'Getting Started',
+    summary: 'The quickest path to your first complete content package.',
+    icon: Sparkles,
+    keywords: ['start', 'first script', 'setup', 'guide'],
+    points: [
+      'Open Studio, choose Script mode, and paste an idea or upload a script file.',
+      'Click Process Script to unlock chapters, title ideas, summaries, and caption helpers.',
+      'Save your project to keep your generated outputs and continue editing later.',
+    ],
+  },
+  {
+    title: 'API Keys & AI Providers',
+    summary: 'How to connect Gemini, Groq, and YouTube processing safely.',
+    icon: Zap,
+    keywords: ['api', 'gemini', 'groq', 'youtube', 'key'],
+    points: [
+      'Go to Privacy and click Manage API Keys to add or update Gemini, Groq, and YouTube keys.',
+      'API keys are stored in browser storage and used for provider calls from your session.',
+      'If generation fails, confirm keys are valid, have quota, and that the selected provider is configured.',
+      'If one provider is unstable, switch the thumbnail assistant provider in AI & Output and retry.',
+    ],
+  },
+  {
+    title: 'Patterns & Reuse',
+    summary: 'Turn proven video structures into repeatable script systems.',
+    icon: FileText,
+    keywords: ['pattern', 'youtube', 'reuse', 'workflow'],
+    points: [
+      'Paste a public YouTube URL to extract a script pattern from transcript structure and flow.',
+      'Saved patterns can be reused to generate new scripts with consistent pacing and logic.',
+      'Drag a saved pattern onto a script draft in Studio to apply its structure to your content.',
+    ],
+  },
+  {
+    title: 'Generation Failures & Error Recovery',
+    summary: 'Step-by-step fixes for failed generation, timeout, and invalid input errors.',
+    icon: TriangleAlert,
+    keywords: ['failed generation', 'timeout', 'invalid', 'provider', 'retry', 'support'],
+    points: [
+      'Q: Error says invalid API key. A: Reopen Manage API Keys, paste the key again without extra spaces, save, and retry.',
+      'Q: Error says quota or rate limit reached. A: Wait briefly, reduce repeated requests, or switch to another configured provider.',
+      'Q: Generation times out on long input. A: Shorten the script or process in parts, then combine results in the editor.',
+      'Q: YouTube transcript could not be read. A: Verify the URL is public and supports transcripts in the source video.',
+      'Q: Output quality is poor or incomplete. A: Re-run with clearer input context and use Detailed output level in AI & Output settings.',
+      'Q: Error persists after retries. A: Refresh the app, confirm sign-in state, and test with a short known-good sample input.',
+    ],
+  },
+  {
+    title: 'Privacy & Account Data',
+    summary: 'What is local, what is synced, and how to control both.',
+    icon: Shield,
+    keywords: ['privacy', 'data', 'firebase', 'account', 'security'],
+    points: [
+      'Synced settings and saved projects are linked to your signed-in Firebase account.',
+      'Local browser items can include API keys and lightweight session-level preferences.',
+      'From Account settings, you can export user data or request deletion of synced account data.',
+    ],
+  },
+  {
+    title: 'Troubleshooting',
+    summary: 'Escalation checklist used by support when processing or generation fails.',
+    icon: TriangleAlert,
+    keywords: ['error', 'troubleshoot', 'fix', 'processing', 'url', 'failed generating', 'support'],
+    points: [
+      'Step 1: Confirm mode and input format are correct (Script mode for text/files, YouTube mode for video links).',
+      'Step 2: Verify keys and provider configuration in Privacy and AI & Output settings.',
+      'Step 3: Retry with a shorter input to rule out payload-size failures.',
+      'Step 4: Refresh and sign in again to reinitialize user-scoped settings and storage.',
+      'Step 5: If still failing, copy the exact error message and the action that triggered it for support triage.',
+    ],
+  },
+];
+
+function getRequestedSettingsTab(search: string): SettingsTabId | null {
+  const value = new URLSearchParams(search).get('tab');
+  if (!value) return null;
+  return SETTINGS_TAB_IDS.includes(value as SettingsTabId) ? (value as SettingsTabId) : null;
+}
+
 const SettingsPage = () => {
-  const [activeTab, setActiveTab] = useState<'general' | 'notifications' | 'ai' | 'privacy' | 'account'>('general');
+  const location = useLocation();
+  const [activeTab, setActiveTab] = useState<SettingsTabId>(() => getRequestedSettingsTab(location.search) ?? 'general');
   const [showAPIModal, setShowAPIModal] = useState(false);
   const [showDeleteAccountModal, setShowDeleteAccountModal] = useState(false);
   const { user, signOut, deleteAccountData } = useAuth();
@@ -63,13 +171,71 @@ const SettingsPage = () => {
   const [deleteConfirmValue, setDeleteConfirmValue] = useState('');
   const [deleteAccountError, setDeleteAccountError] = useState('');
   const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
+  const [helpQuery, setHelpQuery] = useState('');
+  const [openHelpSection, setOpenHelpSection] = useState<string | null>(HELP_CENTER_SECTIONS[0]?.title ?? null);
+  const [supportReportCopied, setSupportReportCopied] = useState(false);
   const navigate = useNavigate();
+
+  const normalizedHelpQuery = helpQuery.trim().toLowerCase();
+  const helpSections = !normalizedHelpQuery
+    ? HELP_CENTER_SECTIONS
+    : HELP_CENTER_SECTIONS.filter((section) => {
+      const text = [
+        section.title,
+        section.summary,
+        ...section.keywords,
+        ...section.points,
+      ].join(' ').toLowerCase();
+      return text.includes(normalizedHelpQuery);
+    });
+
+  useEffect(() => {
+    if (helpSections.length === 0) {
+      setOpenHelpSection(null);
+      return;
+    }
+
+    if (!openHelpSection || !helpSections.some((section) => section.title === openHelpSection)) {
+      setOpenHelpSection(helpSections[0].title);
+    }
+  }, [helpSections, openHelpSection]);
+
+  useEffect(() => {
+    const requestedTab = getRequestedSettingsTab(location.search);
+    if (requestedTab && requestedTab !== activeTab) {
+      setActiveTab(requestedTab);
+    }
+  }, [location.search, activeTab]);
 
   const deleteConfirmationTarget = user?.email?.trim() || user?.uid || '';
 
   const handleSignOut = async () => {
     await signOut();
     navigate('/login');
+  };
+
+  const handleCopySupportReport = async () => {
+    const reportLines = [
+      'TubeFlow Support Report',
+      `Generated At: ${new Date().toISOString()}`,
+      `Page: ${window.location.pathname}${window.location.search}`,
+      `Signed In: ${user ? 'yes' : 'no'}`,
+      `User ID (last 8): ${uid ? uid.slice(-8) : 'not-signed-in'}`,
+      `Help Search Query: ${helpQuery || 'none'}`,
+      `Browser: ${navigator.userAgent}`,
+      'Issue Type: Generation failed / processing error',
+      'Last Action Attempted: Please describe exactly what you clicked before the error.',
+      'Error Message: Please paste the full error text shown in the app.',
+      'Troubleshooting Tried: key check, provider switch, refresh, re-login, shorter input.',
+    ];
+
+    try {
+      await navigator.clipboard.writeText(reportLines.join('\n'));
+      setSupportReportCopied(true);
+      window.setTimeout(() => setSupportReportCopied(false), 1800);
+    } catch (error) {
+      console.warn('Failed to copy support report:', error);
+    }
   };
 
   const handleDeleteAccount = async () => {
@@ -238,7 +404,7 @@ const SettingsPage = () => {
     label,
     icon: Icon,
   }: {
-    id: 'general' | 'notifications' | 'ai' | 'privacy' | 'account';
+    id: 'general' | 'notifications' | 'ai' | 'help' | 'privacy' | 'account';
     label: string;
     icon: React.ElementType;
   }) => (
@@ -297,6 +463,7 @@ const SettingsPage = () => {
               <TabButton id="general" label="General" icon={Settings} />
               <TabButton id="notifications" label="Notifications" icon={Bell} />
               <TabButton id="ai" label="AI & Output" icon={Sparkles} />
+              <TabButton id="help" label="Help Center" icon={HelpCircle} />
               <TabButton id="privacy" label="Privacy" icon={Shield} />
               <TabButton id="account" label="Account" icon={Users} />
             </div>
@@ -479,6 +646,97 @@ const SettingsPage = () => {
                 </div>
               )}
 
+              {/* Help Center */}
+              {activeTab === 'help' && (
+                <div>
+                  <div className="rounded-2xl border border-slate-700 bg-slate-950/60 p-5">
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                      <input
+                        type="text"
+                        value={helpQuery}
+                        onChange={(e) => setHelpQuery(e.target.value)}
+                        placeholder="Search for topics like API keys, patterns, privacy..."
+                        className="w-full rounded-xl border border-slate-700 bg-slate-900 py-2.5 pl-9 pr-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/40 focus:outline-none"
+                      />
+                    </div>
+
+                    <h2 className="mt-5 text-3xl font-bold text-white">Advice and answers from the King Slayer Support Team</h2>
+                    <p className="mt-2 text-sm text-slate-400">
+                      Everything below is specific to TubeFlow workflows, data handling, and day-to-day creator usage.
+                    </p>
+
+                    <div className="mt-4 flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => void handleCopySupportReport()}
+                        className="inline-flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/20"
+                      >
+                        <Clipboard className="h-3.5 w-3.5" />
+                        {supportReportCopied ? 'Support Report Copied' : 'Copy Support Report'}
+                      </button>
+                      <p className="text-xs text-slate-500">
+                        Share this report with support when generation fails so triage is faster.
+                      </p>
+                    </div>
+                  </div>
+
+                  {helpSections.length === 0 ? (
+                    <div className="mt-6 rounded-xl border border-slate-700 bg-slate-900/60 p-5 text-sm text-slate-300">
+                      No help articles matched your search. Try terms like script, youtube, pattern, privacy, or api keys.
+                    </div>
+                  ) : (
+                    <div className="mt-6 grid gap-4 md:grid-cols-2">
+                      {helpSections.map((section) => {
+                        const Icon = section.icon;
+                        const isOpen = openHelpSection === section.title;
+                        return (
+                          <div key={section.title} className="rounded-2xl border border-slate-700 bg-slate-900/60">
+                            <button
+                              type="button"
+                              onClick={() => setOpenHelpSection(isOpen ? null : section.title)}
+                              className="flex w-full items-start justify-between gap-3 px-5 py-4 text-left"
+                            >
+                              <div className="flex items-start gap-3">
+                                <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-emerald-400">
+                                  <Icon className="h-5 w-5" />
+                                </div>
+                                <div>
+                                  <h3 className="text-lg font-semibold text-white">{section.title}</h3>
+                                  <p className="mt-1 text-sm text-slate-400">{section.summary}</p>
+                                </div>
+                              </div>
+                              <ChevronRight className={`mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+                            </button>
+
+                            <AnimatePresence initial={false}>
+                              {isOpen && (
+                                <motion.div
+                                  initial={{ height: 0, opacity: 0 }}
+                                  animate={{ height: 'auto', opacity: 1 }}
+                                  exit={{ height: 0, opacity: 0 }}
+                                  transition={{ duration: 0.2, ease: 'easeOut' }}
+                                  className="overflow-hidden"
+                                >
+                                  <ul className="space-y-2 border-t border-slate-700 px-5 py-4 text-sm text-slate-300">
+                                    {section.points.map((point) => (
+                                      <li key={point} className="flex gap-2 leading-relaxed">
+                                        <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400" />
+                                        <span>{point}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Privacy Settings */}
               {activeTab === 'privacy' && (
                 <div>
@@ -519,6 +777,50 @@ const SettingsPage = () => {
                       <span className="text-sm">Manage API Keys</span>
                       <ChevronRight className="w-4 h-4 text-slate-400" />
                     </button>
+                  </div>
+
+                  <div className="mt-6 rounded-lg border border-slate-700 bg-slate-800/30 p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h3 className="font-semibold text-white">Terms & Privacy</h3>
+                        <p className="mt-1 text-xs text-slate-400">
+                          The main legal and privacy rules for using TubeFlow.
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setShowTermsModal(true)}
+                        className="shrink-0 rounded-lg border border-slate-600 px-3 py-2 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700"
+                      >
+                        Read Full Policy
+                      </button>
+                    </div>
+
+                    <div className="mt-4 space-y-3 text-sm leading-relaxed text-slate-300">
+                      <div>
+                        <p className="font-medium text-white">Terms of Service</p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          Use TubeFlow only for lawful work and only with content you have the right to submit, analyze, adapt, or store.
+                        </p>
+                      </div>
+                      <div>
+                        <p className="font-medium text-white">Privacy Policy</p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          Synced settings and saved projects can live in your Firebase account, while local browser items like API keys and lightweight analytics stay on this device.
+                        </p>
+                      </div>
+                      <div>
+                        <p className="font-medium text-white">API Key Usage</p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          Your API keys are stored locally in the browser and used directly for provider requests. They are not stored on our servers.
+                        </p>
+                      </div>
+                      <div>
+                        <p className="font-medium text-white">Data Deletion</p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          You can clear browser data locally, and synced account data can be removed from your signed-in Firebase account.
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -933,7 +1235,11 @@ const SettingsPage = () => {
               <div className="space-y-4 text-sm text-slate-300 leading-relaxed">
                 <div>
                   <h4 className="font-semibold text-white mb-2">Terms of Service</h4>
-                  <p>TubeFlow is an AI-powered YouTube content tool. By using TubeFlow, you agree to use it for lawful purposes only. You are responsible for the YouTube URLs and content you submit for analysis. Saved projects and account settings may be synced to your Firebase-backed account, while AI processing uses your configured provider keys.</p>
+                  <p>TubeFlow is an AI-powered content tool provided by King Slayer Entertainment. By using TubeFlow, you agree to use it only for lawful purposes and only with content you have the right to submit, analyze, adapt, or store. You are responsible for any YouTube URLs, scripts, media, prompts, and other materials you submit through the app. Saved projects and account settings may be synced to your Firebase-backed account, while AI processing uses your configured provider keys.</p>
+                </div>
+                <div>
+                  <h4 className="font-semibold text-white mb-2">Copyright & Intellectual Property</h4>
+                  <p>Copyright © King Slayer Entertainment. The TubeFlow application, branding, interface, templates, and proprietary workflows are the intellectual property of King Slayer Entertainment. Unauthorized reproduction, redistribution, reverse engineering, or commercial reuse of the application or its proprietary materials is prohibited.</p>
                 </div>
                 <div>
                   <h4 className="font-semibold text-white mb-2">Privacy Policy</h4>

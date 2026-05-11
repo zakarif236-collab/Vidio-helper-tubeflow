@@ -121,34 +121,20 @@
   box-shadow: inset 0 -2px 0 #10b981, 0 0 20px rgba(16,185,129,0.1);
 }
 
-@keyframes idea-led-pulse {
-  0%, 100% {
-    opacity: 0.78;
-    filter: blur(7px) saturate(1.05);
-  }
-  50% {
-    opacity: 1;
-    filter: blur(10px) saturate(1.2);
-  }
+@keyframes idea-border-slide {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
 }
 
-@keyframes idea-lamp-float {
+@keyframes idea-lamp-breathe {
   0%, 100% {
-    transform: translateY(0) scale(1);
+    color: #93c5fd;
+    filter: drop-shadow(0 0 2px rgba(147, 197, 253, 0.2));
   }
-  50% {
-    transform: translateY(-1.5px) scale(1.06);
-  }
-}
-
-@keyframes idea-lamp-glow {
-  0%, 100% {
-    color: #bfdbfe;
-    filter: drop-shadow(0 0 0 rgba(125, 211, 252, 0.1));
-  }
-  50% {
-    color: #fef08a;
-    filter: drop-shadow(0 0 10px rgba(250, 204, 21, 0.65));
+  55% {
+    color: #fde68a;
+    filter: drop-shadow(0 0 6px rgba(253, 224, 71, 0.45));
   }
 }
 
@@ -156,7 +142,24 @@
   position: relative;
   isolation: isolate;
   overflow: visible;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 0 1px rgba(96, 165, 250, 0.25), 0 10px 26px rgba(2, 6, 23, 0.42);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 0 0 1px rgba(245, 158, 11, 0.25),
+    0 8px 22px rgba(2, 6, 23, 0.4);
+}
+
+.idea-led-button:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 0 0 1px rgba(251, 191, 36, 0.45),
+    0 14px 28px rgba(2, 6, 23, 0.5);
+}
+
+.idea-led-button:active {
+  transform: translateY(0);
+  transition-duration: 0.08s;
 }
 
 .idea-led-button::before {
@@ -165,9 +168,16 @@
   inset: -2px;
   z-index: -2;
   border-radius: 1rem;
-  background:
-    linear-gradient(90deg, rgba(56, 189, 248, 0.9), rgba(96, 165, 250, 1), rgba(59, 130, 246, 0.92), rgba(56, 189, 248, 0.9));
-  animation: idea-led-pulse 2s ease-in-out infinite;
+  background: linear-gradient(
+    110deg,
+    rgba(56, 189, 248, 0.05) 0%,
+    rgba(147, 197, 253, 0.82) 38%,
+    rgba(251, 191, 36, 0.58) 56%,
+    rgba(147, 197, 253, 0.82) 74%,
+    rgba(56, 189, 248, 0.05) 100%
+  );
+  background-size: 250% 100%;
+  animation: idea-border-slide 3.6s ease-in-out infinite;
 }
 
 .idea-led-button::after {
@@ -175,22 +185,23 @@
   position: absolute;
   inset: 0;
   border-radius: 0.85rem;
-  border: 1px solid rgba(191, 219, 254, 0.85);
-  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.18), 0 0 14px rgba(59, 130, 246, 0.3);
+  border: 1px solid rgba(191, 219, 254, 0.4);
+  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.1);
 }
 
 .idea-led-button:hover::before {
-  opacity: 1;
-  filter: blur(12px) saturate(1.25);
+  filter: saturate(1.2) brightness(1.1);
+  animation-duration: 1.8s;
 }
 
 .idea-lamp-icon {
-  transform-origin: center bottom;
-  animation: idea-lamp-float 2.1s ease-in-out infinite, idea-lamp-glow 2.8s ease-in-out infinite;
+  animation: idea-lamp-breathe 3.2s ease-in-out infinite;
 }
 
 .idea-led-button:hover .idea-lamp-icon {
-  filter: drop-shadow(0 0 14px rgba(250, 204, 21, 0.8));
+  animation: none;
+  color: #fde68a;
+  filter: drop-shadow(0 0 8px rgba(252, 211, 77, 0.65));
 }
 
 /* Result card hover lift */

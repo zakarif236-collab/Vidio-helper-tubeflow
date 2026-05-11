@@ -32,6 +32,7 @@ interface IdeaDraftRequestBody {
 interface PatternApplicationRequestBody {
   patternScript?: string;
   userScript?: string;
+  targetMinutes?: number;
   apiKey?: string;
 }
 
@@ -200,29 +201,42 @@ function buildIdeaDraftPrompt(
   const developmentWordRange = getPhaseWordRange(targetMinutes, 'development');
   const climaxWordRange = getPhaseWordRange(targetMinutes, 'climax');
   const resolutionWordRange = getPhaseWordRange(targetMinutes, 'resolution');
+  const introMins = Math.round(targetMinutes * 0.1);
+  const devMins = Math.round(targetMinutes * 0.35);
+  const climaxMins = Math.round(targetMinutes * 0.35);
+  const resMins = targetMinutes - introMins - devMins - climaxMins;
 
   return [
-    'You are a professional scriptwriter.',
-    'Expand the following idea into a full spoken script.',
-    `Adjust the phase lengths based on the total duration selected: ${targetMinutes} minutes.`,
+    'You are a world-class YouTube scriptwriter. Your scripts have driven millions of views for top creators.',
+    `Write a full, publish-ready spoken script for a ${targetMinutes}-minute YouTube video.`,
+    `Total word target: ${targetWords} words. Minimum: ${minimumWords} words. Do not stop early.`,
     '',
-    'Structure:',
+    'STRUCTURE — use these exact headings on their own lines, nothing else:',
     '',
-    `- Initial Concept (~10% of total time): Hook, context, and promise. Write ${introductionWordRange.min}-${introductionWordRange.max} words.`,
-    `- Develop Story (~35% of total time): Provide 3-4 examples, dialogue beats, and practical context. Write ${developmentWordRange.min}-${developmentWordRange.max} words.`,
-    `- Key Moment (~35% of total time): Reveal the turning point, strongest insight, or emotional peak. Write ${climaxWordRange.min}-${climaxWordRange.max} words.`,
-    `- Wrap Up (~20% of total time): End with a clear takeaway and call to action. Write ${resolutionWordRange.min}-${resolutionWordRange.max} words.`,
+    `Initial Concept (${introductionWordRange.min}–${introductionWordRange.max} words, ~${introMins} min)`,
+    'GOAL: Hook so strong the viewer cannot click away. Open with a bold claim, shocking stat, relatable failure, or a question that creates instant tension.',
+    'RULES: Never open with "In this video I will..." — that kills retention. Instead: start with the conflict, the payoff, or the surprise. End this section with a clear promise of what the viewer will gain.',
     '',
-    'Rules:',
-    '- Write in natural spoken style, not bullet points.',
-    '- Use transitions between sections.',
-    '- Avoid repeating the idea verbatim; expand it into full sentences.',
-    `- Target total length: about ${targetWords} words for a ${targetMinutes}-minute script.`,
-    `- Aim for roughly ${targetWords} words overall, but do not go below ${minimumWords} words.`,
-    `- Minimum acceptable length: ${minimumWords} words. Do not stop early.`,
-    '- Do not use markdown, bullet lists, or bold formatting anywhere in the output.',
-    '- Use these exact section headings on their own lines: Initial Concept, Develop Story, Key Moment, Wrap Up.',
-    '- Return plain text only.',
+    `Develop Story (${developmentWordRange.min}–${developmentWordRange.max} words, ~${devMins} min)`,
+    'GOAL: Deliver specific, high-value content. Use 3–4 concrete examples, real stories, step-by-step breakdowns, or dialogue beats. Every beat must earn the viewer\'s continued attention.',
+    'RULES: Use open loops ("I\'ll show you exactly why in a moment...") to hold attention across beats. Add [B-ROLL: <short description>] inline cues at 2–3 natural moments. Use specific numbers and details — vague claims lose viewers.',
+    '',
+    `Key Moment (${climaxWordRange.min}–${climaxWordRange.max} words, ~${climaxMins} min)`,
+    'GOAL: The biggest payoff. The insight that reframes everything, the unexpected twist, or the emotional peak that makes this video worth sharing.',
+    'RULES: This is the "reason you watched" moment. Use a contrarian take, a surprising reveal, or a "the thing nobody tells you about..." beat. Include a mid-video retention hook before this section if the previous section ran long.',
+    '',
+    `Wrap Up (${resolutionWordRange.min}–${resolutionWordRange.max} words, ~${resMins} min)`,
+    'GOAL: Lock in the takeaway, give one concrete next action, close any open loops, and deliver the CTA.',
+    'RULES: Callback to the hook from the opening. Make the CTA feel like a natural next step, not a transaction. End on a line that lands — a final truth, a reframe, or a motivational close.',
+    '',
+    'QUALITY RULES FOR THE FULL SCRIPT:',
+    '- Write in second person ("you") throughout — make it feel personal to one viewer.',
+    '- Mix sentence length: short punchy sentences for impact, longer ones to build context.',
+    '- Every single sentence must earn its place. Cut anything vague, filler, or slow.',
+    '- Weave in the topic\'s key terms naturally 3–5 times for SEO memorability.',
+    '- Write how a skilled presenter actually talks — contractions, direct questions, natural pauses.',
+    '- Do NOT use markdown, bullet lists, bold, or headers inside the script.',
+    '- Use the exact four headings above. Return plain spoken text only.',
     '',
     `Subject: ${idea}`,
     `Initial Concept notes: ${sections?.introduction || 'none provided'}`,
@@ -230,11 +244,59 @@ function buildIdeaDraftPrompt(
     `Key Moment notes: ${sections?.climax || 'none provided'}`,
     `Wrap Up notes: ${sections?.resolution || 'none provided'}`,
     retryOptions
-      ? `Rewrite the draft so it is significantly fuller than the previous ${retryOptions.previousWordCount}-word attempt. Expand further to reach ${targetWords} words while keeping the same four-section structure.`
+      ? `IMPORTANT: The previous attempt was only ${retryOptions.previousWordCount} words. Expand every section significantly. Hit at least ${targetWords} words — do not summarize, do not skip beats, keep building.`
       : '',
     retryOptions?.existingDraft
-      ? ['Current draft to expand and improve:', retryOptions.existingDraft].join('\n\n')
+      ? ['Previous draft to expand:\n', retryOptions.existingDraft].join('\n')
       : '',
+  ].filter(Boolean).join('\n');
+}
+
+function buildSEOPrompt(idea: string, draft: string): string {
+  const draftExcerpt = draft.slice(0, 3000);
+  return [
+    'You are a YouTube SEO expert. Based on the idea and script excerpt below, generate a complete SEO package.',
+    'Return ONLY a valid JSON object with this exact structure, no other text:',
+    '{',
+    '  "titles": ["title1", "title2", "title3"],',
+    '  "description": "full YouTube description here",',
+    '  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],',
+    '  "thumbnailConcepts": ["concept1", "concept2"]',
+    '}',
+    '',
+    'Rules for titles: 3 options, each under 70 characters. First must use a number or power word. Second must tease a reveal or secret. Third must be curiosity-gap or contrarian.',
+    'Rules for description: Start with 2 hook sentences (most important for SEO). Then list 3-5 key points covered. Then a CTA. Then 3-5 hashtags at the end. Max 500 characters.',
+    'Rules for tags: 10 specific tags mixing broad and niche terms. Include the topic, related subtopics, and audience intent terms.',
+    'Rules for thumbnailConcepts: 2 short descriptions of high-CTR thumbnail compositions.',
+    '',
+    `Video idea: ${idea}`,
+    'Script excerpt:',
+    draftExcerpt,
+  ].join('\n');
+}
+
+function buildUrlPatternAnalysisPrompt(title: string, transcript: string): string {
+  const transcriptExcerpt = getYouTubeTranscriptPromptExcerpt(transcript, 10000);
+  return [
+    'You are an expert YouTube content strategist and scriptwriting coach.',
+    'Analyze this transcript and extract the creator\'s exact scriptwriting formula.',
+    'Return ONLY a valid JSON object with this exact structure, no other text:',
+    '{',
+    '  "hookFormula": "describe exactly how the first 30-60 seconds works",',
+    '  "retentionLoops": ["technique1", "technique2", "technique3"],',
+    '  "transitionPhrases": ["phrase1", "phrase2", "phrase3"],',
+    '  "exampleStructure": "how they set up and deliver examples",',
+    '  "ctaStyle": "how they ask for likes/subscribes/next actions",',
+    '  "pacingBlueprint": "sentence rhythm, pacing patterns, emphasis style",',
+    '  "keywordStrategy": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],',
+    '  "powerWords": ["word1", "word2", "word3", "word4", "word5"],',
+    '  "styleProfile": "2-3 sentence summary of the creator\'s complete style formula",',
+    '  "applicableTemplate": "write the opening 3-4 sentences using this creator\'s exact hook formula, applied to a new topic"',
+    '}',
+    '',
+    `Title: ${title}`,
+    'Transcript:',
+    transcriptExcerpt,
   ].join('\n');
 }
 
@@ -309,12 +371,43 @@ function buildYouTubeTranscriptLearningPrompt(title: string, transcript: string)
   ].join('\n');
 }
 
-function buildPatternApplicationPrompt(patternScript: string, userScript: string): string {
+function getPatternApplicationMaxTokens(totalMinutes: number | undefined, provider: 'groq' | 'huggingface'): number {
+  const normalizedMinutes = normalizeTargetMinutes(totalMinutes);
+
+  if (provider === 'groq') {
+    if (normalizedMinutes === 20) {
+      return 4800;
+    }
+    if (normalizedMinutes === 15) {
+      return 3600;
+    }
+    if (normalizedMinutes === 10) {
+      return 2800;
+    }
+    return 2200;
+  }
+
+  if (normalizedMinutes === 20) {
+    return 4200;
+  }
+  if (normalizedMinutes === 15) {
+    return 3200;
+  }
+  if (normalizedMinutes === 10) {
+    return 2400;
+  }
+  return 1800;
+}
+
+function buildPatternApplicationPrompt(patternScript: string, userScript: string, targetMinutes: number | undefined): string {
   const patternExcerpt = getYouTubeTranscriptPromptExcerpt(patternScript, 8_000);
   const userScriptExcerpt = getYouTubeTranscriptPromptExcerpt(userScript, 8_000);
+  const normalizedMinutes = normalizeTargetMinutes(targetMinutes);
+  const targetWords = getTargetWordCount(normalizedMinutes);
 
   return [
     'Study the first script as a source pattern, then rewrite the second script using that pattern logic.',
+    `Target the final output for a ${normalizedMinutes}-minute YouTube script at roughly ${targetWords} words.`,
     '',
     'Do not paste the pattern into the user script.',
     'Do not copy distinctive sentences from the pattern verbatim.',
@@ -331,6 +424,7 @@ function buildPatternApplicationPrompt(patternScript: string, userScript: string
     '',
     'Rewrite rules:',
     '- Keep the improved script focused on the user script\'s story, not the pattern\'s original topic.',
+    `- Expand or condense the script so it feels appropriately paced for ${normalizedMinutes} minutes.`,
     '- Strengthen weak transitions and add connective phrasing where needed.',
     '- Reuse recurring framing terms only when they fit naturally.',
     '- If the user script lacks a concrete example, add a short believable illustrative moment that matches the story.',
@@ -431,7 +525,7 @@ function extractDominantPatternTerm(patternScript: string): string | null {
   return topWord && typeof topCount === 'number' && topCount > 1 ? topWord : null;
 }
 
-function buildFallbackPatternAppliedScript(patternScript: string, userScript: string): string {
+function buildFallbackPatternAppliedScript(patternScript: string, userScript: string, targetMinutes?: number): string {
   const blocks = parsePatternBlocks(patternScript);
   const userSentences = splitSentences(userScript);
   const opening = ensureSentence(userSentences[0] || userScript);
@@ -440,6 +534,7 @@ function buildFallbackPatternAppliedScript(patternScript: string, userScript: st
   const transition = ensureSentence(stripOuterQuotes(blocks.Transition || 'But here is the twist'));
   const endingCta = ensureSentence(stripOuterQuotes(blocks['Ending CTA'] || blocks['Wrap Up'] || 'Keep shaping it until the story becomes stronger'));
   const exampleSeed = ensureSentence(stripOuterQuotes(userSentences[1] || userSentences[0] || userScript));
+  const normalizedMinutes = normalizeTargetMinutes(targetMinutes);
 
   const improvedSentences = [
     opening,
@@ -447,6 +542,7 @@ function buildFallbackPatternAppliedScript(patternScript: string, userScript: st
       ? ensureSentence(`That was the ${dominantTerm} inside the story, the first sign that this journey could become something larger`)
       : ensureSentence('That opening gives the story a stronger center, but a strong beginning still needs rhythm and direction'),
     continuation,
+    ensureSentence(`Keep the pacing shaped for a ${normalizedMinutes}-minute YouTube script so each beat has room to land without dragging`),
     dominantTerm
       ? ensureSentence(`A ${dominantTerm} can start the motion, but without pressure, proof, and purpose it fades before the story fully lands`)
       : ensureSentence('Momentum matters because effort alone is not enough to make a story feel complete'),
@@ -603,10 +699,12 @@ async function generatePatternAppliedScriptWithProvider(
   provider: 'groq' | 'huggingface',
   patternScript: string,
   userScript: string,
+  targetMinutes: number | undefined,
   providerApiKey?: string,
   errorCapture?: { message: string }
 ): Promise<string | null> {
-  const prompt = buildPatternApplicationPrompt(patternScript, userScript);
+  const prompt = buildPatternApplicationPrompt(patternScript, userScript, targetMinutes);
+  const maxTokens = getPatternApplicationMaxTokens(targetMinutes, provider);
 
   if (provider === 'groq') {
     const apiKey = providerApiKey || process.env.GROQ_API_KEY;
@@ -626,7 +724,7 @@ async function generatePatternAppliedScriptWithProvider(
           model: 'llama-3.3-70b-versatile',
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.7,
-          max_tokens: 2200,
+          max_tokens: maxTokens,
         }),
       });
 
@@ -677,7 +775,7 @@ async function generatePatternAppliedScriptWithProvider(
           },
         ],
         temperature: 0.7,
-        max_tokens: 1800,
+        max_tokens: maxTokens,
         stream: false,
       }),
     });
@@ -908,6 +1006,186 @@ async function generateIdeaDraftWithProvider(
   return currentDraft;
 }
 
+export interface ScriptSEOResult {
+  titles: string[];
+  description: string;
+  tags: string[];
+  thumbnailConcepts: string[];
+}
+
+async function generateScriptSEO(
+  idea: string,
+  draft: string,
+  provider?: 'groq' | 'huggingface'
+): Promise<ScriptSEOResult | null> {
+  const resolvedProvider = provider ?? getAvailableIdeaDraftProvider();
+  if (!resolvedProvider) return null;
+
+  const prompt = buildSEOPrompt(idea, draft);
+
+  const callProvider = async (p: 'groq' | 'huggingface'): Promise<string | null> => {
+    if (p === 'groq') {
+      const apiKey = process.env.GROQ_API_KEY;
+      if (!apiKey) return null;
+      try {
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model: 'llama-3.3-70b-versatile',
+            messages: [{ role: 'user', content: prompt }],
+            temperature: 0.4,
+            max_tokens: 800,
+            response_format: { type: 'json_object' },
+          }),
+        });
+        if (!response.ok) return null;
+        const data = await response.json();
+        return data?.choices?.[0]?.message?.content?.trim() ?? null;
+      } catch { return null; }
+    }
+    const apiKey = process.env.HUGGINGFACE_API_KEY;
+    const model = process.env.HUGGINGFACE_MODEL || 'Qwen/Qwen2.5-72B-Instruct';
+    if (!apiKey) return null;
+    try {
+      const response = await fetch('https://router.huggingface.co/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.4,
+          max_tokens: 800,
+          stream: false,
+        }),
+      });
+      if (!response.ok) return null;
+      const data = await response.json();
+      const content = data?.choices?.[0]?.message?.content;
+      return typeof content === 'string' ? content.trim() : null;
+    } catch { return null; }
+  };
+
+  let raw = await callProvider(resolvedProvider);
+  if (!raw) {
+    const fallback: 'groq' | 'huggingface' = resolvedProvider === 'groq' ? 'huggingface' : 'groq';
+    const fallbackKeyPresent = fallback === 'groq' ? !!process.env.GROQ_API_KEY : !!process.env.HUGGINGFACE_API_KEY;
+    if (fallbackKeyPresent) raw = await callProvider(fallback);
+  }
+
+  if (!raw) return null;
+
+  try {
+    const jsonStart = raw.indexOf('{');
+    const jsonEnd = raw.lastIndexOf('}');
+    if (jsonStart === -1 || jsonEnd === -1) return null;
+    const parsed = JSON.parse(raw.slice(jsonStart, jsonEnd + 1));
+    return {
+      titles: Array.isArray(parsed.titles) ? parsed.titles.filter((t: unknown) => typeof t === 'string').slice(0, 3) : [],
+      description: typeof parsed.description === 'string' ? parsed.description : '',
+      tags: Array.isArray(parsed.tags) ? parsed.tags.filter((t: unknown) => typeof t === 'string').slice(0, 15) : [],
+      thumbnailConcepts: Array.isArray(parsed.thumbnailConcepts) ? parsed.thumbnailConcepts.filter((t: unknown) => typeof t === 'string').slice(0, 2) : [],
+    };
+  } catch { return null; }
+}
+
+export interface UrlPatternAnalysisResult {
+  hookFormula: string;
+  retentionLoops: string[];
+  transitionPhrases: string[];
+  exampleStructure: string;
+  ctaStyle: string;
+  pacingBlueprint: string;
+  keywordStrategy: string[];
+  powerWords: string[];
+  styleProfile: string;
+  applicableTemplate: string;
+  sourceTitle: string;
+}
+
+async function analyzeUrlAsPattern(
+  title: string,
+  transcript: string,
+  provider?: 'groq' | 'huggingface'
+): Promise<UrlPatternAnalysisResult | null> {
+  const resolvedProvider = provider ?? getAvailableIdeaDraftProvider();
+  if (!resolvedProvider) return null;
+
+  const prompt = buildUrlPatternAnalysisPrompt(title, transcript);
+
+  const callProvider = async (p: 'groq' | 'huggingface'): Promise<string | null> => {
+    if (p === 'groq') {
+      const apiKey = process.env.GROQ_API_KEY;
+      if (!apiKey) return null;
+      try {
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model: 'llama-3.3-70b-versatile',
+            messages: [{ role: 'user', content: prompt }],
+            temperature: 0.3,
+            max_tokens: 1200,
+            response_format: { type: 'json_object' },
+          }),
+        });
+        if (!response.ok) return null;
+        const data = await response.json();
+        return data?.choices?.[0]?.message?.content?.trim() ?? null;
+      } catch { return null; }
+    }
+    const apiKey = process.env.HUGGINGFACE_API_KEY;
+    const model = process.env.HUGGINGFACE_MODEL || 'Qwen/Qwen2.5-72B-Instruct';
+    if (!apiKey) return null;
+    try {
+      const response = await fetch('https://router.huggingface.co/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.3,
+          max_tokens: 1200,
+          stream: false,
+        }),
+      });
+      if (!response.ok) return null;
+      const data = await response.json();
+      const content = data?.choices?.[0]?.message?.content;
+      return typeof content === 'string' ? content.trim() : null;
+    } catch { return null; }
+  };
+
+  let raw = await callProvider(resolvedProvider);
+  if (!raw) {
+    const fallback: 'groq' | 'huggingface' = resolvedProvider === 'groq' ? 'huggingface' : 'groq';
+    const fallbackKeyPresent = fallback === 'groq' ? !!process.env.GROQ_API_KEY : !!process.env.HUGGINGFACE_API_KEY;
+    if (fallbackKeyPresent) raw = await callProvider(fallback);
+  }
+
+  if (!raw) return null;
+
+  try {
+    const jsonStart = raw.indexOf('{');
+    const jsonEnd = raw.lastIndexOf('}');
+    if (jsonStart === -1 || jsonEnd === -1) return null;
+    const parsed = JSON.parse(raw.slice(jsonStart, jsonEnd + 1));
+    return {
+      hookFormula: typeof parsed.hookFormula === 'string' ? parsed.hookFormula : '',
+      retentionLoops: Array.isArray(parsed.retentionLoops) ? parsed.retentionLoops.filter((x: unknown) => typeof x === 'string').slice(0, 5) : [],
+      transitionPhrases: Array.isArray(parsed.transitionPhrases) ? parsed.transitionPhrases.filter((x: unknown) => typeof x === 'string').slice(0, 6) : [],
+      exampleStructure: typeof parsed.exampleStructure === 'string' ? parsed.exampleStructure : '',
+      ctaStyle: typeof parsed.ctaStyle === 'string' ? parsed.ctaStyle : '',
+      pacingBlueprint: typeof parsed.pacingBlueprint === 'string' ? parsed.pacingBlueprint : '',
+      keywordStrategy: Array.isArray(parsed.keywordStrategy) ? parsed.keywordStrategy.filter((x: unknown) => typeof x === 'string').slice(0, 7) : [],
+      powerWords: Array.isArray(parsed.powerWords) ? parsed.powerWords.filter((x: unknown) => typeof x === 'string').slice(0, 8) : [],
+      styleProfile: typeof parsed.styleProfile === 'string' ? parsed.styleProfile : '',
+      applicableTemplate: typeof parsed.applicableTemplate === 'string' ? parsed.applicableTemplate : '',
+      sourceTitle: title,
+    };
+  } catch { return null; }
+}
+
 // ── YouTube helpers ───────────────────────────────────────────────────────────
 
 function extractYouTubeVideoId(url: string): string | null {
@@ -1081,6 +1359,21 @@ function getQuotaLimit(kind: UsageQuotaKind): number {
   return kind === 'idea' ? 40 : 120;
 }
 
+function getAuthUserMessage(error: unknown): string {
+  if (hasFirebaseAdminErrorCode(error, 'auth/id-token-expired')) {
+    return 'Your session expired. Please refresh the page and try again.';
+  }
+  if (hasFirebaseAdminErrorCode(error, 'auth/user-disabled')) {
+    return 'This account has been disabled. Contact support if you think this is a mistake.';
+  }
+  if (
+    error instanceof Error && error.message.includes('Missing Firebase ID token')
+  ) {
+    return 'Please sign in to continue.';
+  }
+  return 'Your session is invalid. Please sign out and sign back in.';
+}
+
 async function requireAuthenticatedUser(req: Request): Promise<DecodedIdToken> {
   const idToken = readBearerToken(req);
   if (!idToken) {
@@ -1159,8 +1452,8 @@ function isQuotaExceededError(error: unknown): error is UsageQuotaExceededError 
 
 function getQuotaExceededUserMessage(kind: UsageQuotaKind): string {
   return kind === 'idea'
-    ? 'You have used all idea generations for this month on your current plan.'
-    : 'You have used all AI draft generations for this month on your current plan.';
+    ? 'You\'ve hit today\'s idea generation limit. Come back tomorrow for more credits.'
+    : 'You\'ve hit today\'s AI draft limit. Come back tomorrow for more credits.';
 }
 
 async function deleteCollectionDocuments(firestore: Firestore, collectionPath: string): Promise<void> {
@@ -1322,7 +1615,7 @@ function classifyProviderError(error: string): { code: ApiErrorCode; userMessage
   ) {
     return {
       code: 'quota_exceeded',
-      userMessage: 'This AI provider has run out of credits for now. Please come back later or switch to another provider.',
+      userMessage: 'You\'ve hit today\'s usage limit. Come back tomorrow for more credits, or switch to another provider.',
     };
   }
 
@@ -2427,7 +2720,7 @@ async function startServer() {
         || hasFirebaseAdminErrorCode(error, 'auth/user-disabled')
         || (error instanceof Error && error.message.includes('Missing Firebase ID token'))
       ) {
-        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized thumbnail assistant request.', 'Sign in to use the thumbnail assistant.');
+        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized thumbnail assistant request.', getAuthUserMessage(error));
       }
 
       if (isQuotaExceededError(error)) {
@@ -2451,7 +2744,7 @@ async function startServer() {
         || hasFirebaseAdminErrorCode(error, 'auth/user-disabled')
         || (error instanceof Error && error.message.includes('Missing Firebase ID token'))
       ) {
-        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', 'Sign in to generate AI drafts.');
+        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', getAuthUserMessage(error));
       }
 
       if (isQuotaExceededError(error)) {
@@ -2679,7 +2972,7 @@ async function startServer() {
     try {
       await requireAuthenticatedUserOrGuestTrial(req, 'draft');
 
-      const { patternScript, userScript, apiKey } = req.body as PatternApplicationRequestBody;
+      const { patternScript, userScript, targetMinutes, apiKey } = req.body as PatternApplicationRequestBody;
 
       if (!patternScript || typeof patternScript !== 'string') {
         return sendApiError(res, 400, 'invalid_input', 'Pattern script is required.', 'Drag a saved pattern into the editor to continue.');
@@ -2712,9 +3005,10 @@ async function startServer() {
       }
 
       const trimmedApiKey = typeof apiKey === 'string' ? apiKey.trim() : '';
+      const normalizedTargetMinutes = normalizeTargetMinutes(targetMinutes);
       const provider = trimmedApiKey ? 'groq' : getAvailableIdeaDraftProvider();
       if (!provider) {
-        return res.json({ script: buildFallbackPatternAppliedScript(patternScript, userScript), source: 'local-pattern-fallback' });
+        return res.json({ script: buildFallbackPatternAppliedScript(patternScript, userScript, normalizedTargetMinutes), source: 'local-pattern-fallback' });
       }
 
       const groqErrorCapture: { message: string } = { message: '' };
@@ -2724,6 +3018,7 @@ async function startServer() {
         provider,
         patternScript,
         userScript,
+        normalizedTargetMinutes,
         provider === 'groq' ? trimmedApiKey : undefined,
         provider === 'groq' ? groqErrorCapture : hfErrorCapture
       );
@@ -2736,6 +3031,7 @@ async function startServer() {
             fallback,
             patternScript,
             userScript,
+            normalizedTargetMinutes,
             fallback === 'groq' ? trimmedApiKey : undefined,
             fallback === 'groq' ? groqErrorCapture : hfErrorCapture
           );
@@ -2743,7 +3039,7 @@ async function startServer() {
       }
 
       if (!improvedScript) {
-        improvedScript = buildFallbackPatternAppliedScript(patternScript, userScript);
+        improvedScript = buildFallbackPatternAppliedScript(patternScript, userScript, normalizedTargetMinutes);
       }
 
       return res.json({ script: improvedScript.trim() });
@@ -2757,7 +3053,7 @@ async function startServer() {
         || hasFirebaseAdminErrorCode(error, 'auth/user-disabled')
         || (error instanceof Error && error.message.includes('Missing Firebase ID token'))
       ) {
-        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', 'Sign in to apply saved patterns.');
+        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', getAuthUserMessage(error));
       }
 
       if (isQuotaExceededError(error)) {
@@ -2772,6 +3068,85 @@ async function startServer() {
         'We could not apply that pattern right now. Please try again in a moment.'
       );
     }
+  });
+
+  /**
+   * Analyze a YouTube URL and extract its scriptwriting pattern DNA.
+   * Returns a structured pattern that can be saved and reused to generate new scripts.
+   */
+  app.post("/api/script/analyze-url", aiGenerationLimiter, async (req, res) => {
+    try {
+      await requireAuthenticatedUserOrGuestTrial(req, 'draft');
+    } catch (error) {
+      if (
+        hasFirebaseAdminErrorCode(error, 'auth/id-token-expired')
+        || hasFirebaseAdminErrorCode(error, 'auth/argument-error')
+        || hasFirebaseAdminErrorCode(error, 'auth/invalid-id-token')
+        || hasFirebaseAdminErrorCode(error, 'auth/user-disabled')
+        || (error instanceof Error && error.message.includes('Missing Firebase ID token'))
+      ) {
+        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', getAuthUserMessage(error));
+      }
+      if (isQuotaExceededError(error)) {
+        return sendApiError(res, 403, 'quota_exceeded', error.message, getQuotaExceededUserMessage(error.kind));
+      }
+      return sendApiError(res, 500, 'processing_failed', error instanceof Error ? error.message : 'Quota check failed.', 'We could not validate your account usage right now. Please try again.');
+    }
+
+    const { url } = req.body as { url?: string };
+
+    if (!url || typeof url !== 'string') {
+      return sendApiError(res, 400, 'invalid_input', 'YouTube URL is required', 'Please enter a YouTube URL to analyze.');
+    }
+
+    const urlLengthError = enforceMaxLength(res, url, 'YouTube URL', MAX_URL_LENGTH, 'That YouTube URL is unexpectedly long. Please use a standard video link.');
+    if (urlLengthError) return urlLengthError;
+
+    const videoId = extractYouTubeVideoId(url);
+    if (!videoId) {
+      return sendApiError(res, 400, 'invalid_input', 'Invalid YouTube URL.', 'That link does not look like a valid YouTube video URL. Please check it and try again.');
+    }
+
+    const provider = getAvailableIdeaDraftProvider();
+    if (!provider) {
+      return sendApiError(res, 503, 'missing_configuration', 'Missing AI API key.', 'The AI service is not configured yet. Add an API key, then try again.');
+    }
+
+    console.log(`Analyzing YouTube pattern for: ${videoId}`);
+
+    const transcriptResult = await fetchYouTubeTranscript(videoId);
+    if ('error' in transcriptResult) {
+      const classified = classifyTranscriptError(transcriptResult.error);
+      return sendApiError(res, 422, classified.code, transcriptResult.error, classified.userMessage);
+    }
+
+    const { title, transcript } = transcriptResult;
+
+    const patternResult = await analyzeUrlAsPattern(title, transcript, provider);
+    if (!patternResult) {
+      return sendApiError(res, 502, 'provider_unavailable', 'Pattern analysis failed.', 'The AI could not analyze this video right now. Please try again in a moment.');
+    }
+
+    // Build a ready-to-save pattern content string from the analysis
+    const patternContent = [
+      `STYLE PROFILE\n${patternResult.styleProfile}`,
+      `HOOK FORMULA\n${patternResult.hookFormula}`,
+      `RETENTION LOOPS\n${patternResult.retentionLoops.map((x, i) => `${i + 1}. ${x}`).join('\n')}`,
+      `TRANSITION PHRASES\n${patternResult.transitionPhrases.join(' | ')}`,
+      `EXAMPLE STRUCTURE\n${patternResult.exampleStructure}`,
+      `CTA STYLE\n${patternResult.ctaStyle}`,
+      `PACING BLUEPRINT\n${patternResult.pacingBlueprint}`,
+      `KEYWORD STRATEGY\n${patternResult.keywordStrategy.join(', ')}`,
+      `POWER WORDS\n${patternResult.powerWords.join(', ')}`,
+      `APPLICABLE TEMPLATE\n${patternResult.applicableTemplate}`,
+    ].join('\n\n');
+
+    res.json({
+      ...patternResult,
+      patternContent,
+      suggestedName: `${title.slice(0, 40)} Pattern`,
+      transcript,
+    });
   });
 
   app.post("/api/process/idea-draft", aiGenerationLimiter, async (req, res) => {
@@ -2846,7 +3221,7 @@ async function startServer() {
           502,
           'quota_exceeded',
           `HuggingFace credits exhausted (402).${groqNote} Please check your HuggingFace account or set GROQ_API_KEY.`,
-          'This AI provider has used up its credits for now. Please come back later or switch to another provider.'
+          'You\'ve hit today\'s usage limit. Come back tomorrow for more credits, or switch to another provider.'
         );
       }
 
@@ -2878,7 +3253,10 @@ async function startServer() {
         );
       }
 
-      res.json(result);
+      // Generate SEO bundle (non-blocking — failure is silent)
+      const seo = await generateScriptSEO(idea, result.draft, resultProvider).catch(() => null);
+
+      res.json({ ...result, seo: seo ?? null });
     } catch (error) {
       if (
         hasFirebaseAdminErrorCode(error, 'auth/id-token-expired')
@@ -2887,7 +3265,7 @@ async function startServer() {
         || hasFirebaseAdminErrorCode(error, 'auth/user-disabled')
         || (error instanceof Error && error.message.includes('Missing Firebase ID token'))
       ) {
-        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', 'Sign in to generate idea drafts.');
+        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', getAuthUserMessage(error));
       }
 
       if (isQuotaExceededError(error)) {
@@ -2985,7 +3363,7 @@ async function startServer() {
         || hasFirebaseAdminErrorCode(error, 'auth/user-disabled')
         || (error instanceof Error && error.message.includes('Missing Firebase ID token'))
       ) {
-        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', 'Sign in to generate AI drafts.');
+        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', getAuthUserMessage(error));
       }
 
       if (isQuotaExceededError(error)) {
@@ -3051,7 +3429,7 @@ async function startServer() {
         || hasFirebaseAdminErrorCode(error, 'auth/user-disabled')
         || (error instanceof Error && error.message.includes('Missing Firebase ID token'))
       ) {
-        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', 'Sign in to generate AI images.');
+        return sendApiError(res, 401, 'unauthorized', error instanceof Error ? error.message : 'Unauthorized AI request.', getAuthUserMessage(error));
       }
 
       if (isQuotaExceededError(error)) {

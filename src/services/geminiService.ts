@@ -10,7 +10,7 @@ async function buildAuthenticatedHeaders(): Promise<Record<string, string>> {
     };
   }
 
-  const idToken = await currentUser.getIdToken();
+  const idToken = await currentUser.getIdToken(/* forceRefresh */ true);
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${idToken}`,
@@ -38,6 +38,8 @@ export interface PatternAppliedScriptResponse {
   script: string;
 }
 
+export type ScriptDurationOption = 8 | 10 | 15 | 20;
+
 type ApiErrorResponse = {
   code?: string;
   error?: string;
@@ -49,7 +51,7 @@ function inferFriendlyMessage(code: string | undefined, rawMessage: string, fall
   const normalizedMessage = rawMessage.trim().toLowerCase();
 
   if (normalizedCode === 'quota_exceeded' || normalizedMessage.includes('credit') || normalizedMessage.includes('quota')) {
-    return 'This AI provider has used up its credits for now. Please come back later or switch to another provider.';
+    return 'You\'ve hit today\'s usage limit. Come back tomorrow for more credits, or switch to another provider.';
   }
 
   if (normalizedCode === 'timeout' || normalizedMessage.includes('timeout') || normalizedMessage.includes('timed out')) {
@@ -189,6 +191,29 @@ export interface IdeaDraftResponse {
     }>;
   };
   source: 'local-nlp' | 'huggingface' | 'groq';
+  seo?: {
+    titles: string[];
+    description: string;
+    tags: string[];
+    thumbnailConcepts: string[];
+  } | null;
+}
+
+export interface UrlPatternAnalysis {
+  hookFormula: string;
+  retentionLoops: string[];
+  transitionPhrases: string[];
+  exampleStructure: string;
+  ctaStyle: string;
+  pacingBlueprint: string;
+  keywordStrategy: string[];
+  powerWords: string[];
+  styleProfile: string;
+  applicableTemplate: string;
+  sourceTitle: string;
+  patternContent: string;
+  suggestedName: string;
+  transcript?: string;
 }
 
 export interface IdeaDraftRequest {
@@ -233,7 +258,8 @@ export async function processUserScript(
 
 export async function applyPatternToScript(
   patternScript: string,
-  userScript: string
+  userScript: string,
+  targetMinutes: ScriptDurationOption
 ): Promise<PatternAppliedScriptResponse> {
   try {
     const headers = await buildAuthenticatedHeaders();
@@ -244,6 +270,7 @@ export async function applyPatternToScript(
       body: JSON.stringify({
         patternScript,
         userScript,
+        targetMinutes,
         apiKey: currentUser ? readUserScopedStorageValue('app_groq_key', currentUser.uid) || '' : '',
       })
     });
@@ -315,6 +342,21 @@ export async function processYouTubeUrl(url: string): Promise<ProcessingResult> 
  * Unified function to process user-uploaded scripts (text content)
  * Generates transcript, chapters, and summary for provided text/script content
  */
+export async function analyzeUrlAsPattern(url: string): Promise<UrlPatternAnalysis> {
+  const headers = await buildAuthenticatedHeaders();
+  const response = await fetch('/api/script/analyze-url', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ url }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await extractApiErrorMessage(response, 'We could not analyze that video right now. Please try again in a moment.'));
+  }
+
+  return await response.json();
+}
+
 export async function processUploadedScript(scriptContent: string): Promise<ProcessingResult> {
   try {
     const backendResult = await processUserScript(scriptContent);
