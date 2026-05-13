@@ -67,7 +67,7 @@ export interface IdeaDraftResult {
   outline: string[];
   keywords: string[];
   validation: IdeaDraftValidation;
-  source: 'local-nlp' | 'huggingface' | 'groq';
+  source: 'local-nlp' | 'huggingface' | 'groq' | 'gemini';
   sections: Required<IdeaDraftSectionsInput>;
   cues: IdeaImmersiveCue[];
   timeline: IdeaTimelineItem[];

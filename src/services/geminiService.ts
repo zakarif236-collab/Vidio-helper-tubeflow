@@ -190,7 +190,7 @@ export interface IdeaDraftResponse {
       issues: string[];
     }>;
   };
-  source: 'local-nlp' | 'huggingface' | 'groq';
+  source: 'local-nlp' | 'huggingface' | 'groq' | 'gemini';
   seo?: {
     titles: string[];
     description: string;

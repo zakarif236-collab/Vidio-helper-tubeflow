@@ -111,26 +111,83 @@ function getPhaseWordRange(totalMinutes: number | undefined, phase: 'introductio
   return ranges[normalizedMinutes][phase];
 }
 
-let _providerRoundRobinCounter = 0;
+type IdeaDraftProvider = 'groq' | 'huggingface' | 'gemini';
+type StructuredGenerationProvider = 'groq' | 'huggingface';
 
-function getAvailableIdeaDraftProvider(): 'groq' | 'huggingface' | 'gemini' | null {
-  const hasGroq = !!process.env.GROQ_API_KEY;
-  const hasHuggingFace = !!process.env.HUGGINGFACE_API_KEY;
-  const hasGeminiDraft = !!process.env.GEMINI_DRAFT_API_KEY;
+const DEFAULT_IDEA_DRAFT_PROVIDER_ORDER: IdeaDraftProvider[] = ['gemini', 'groq', 'huggingface'];
+const DEFAULT_STRUCTURED_PROVIDER_ORDER: StructuredGenerationProvider[] = ['groq', 'huggingface'];
 
-  const providers: Array<'groq' | 'huggingface' | 'gemini'> = [];
-  if (hasGroq) providers.push('groq');
-  if (hasHuggingFace) providers.push('huggingface');
-  if (hasGeminiDraft) providers.push('gemini');
+function parseProviderOrder<TProvider extends string>(
+  rawValue: string | undefined,
+  allowedProviders: readonly TProvider[],
+  fallbackOrder: readonly TProvider[]
+): TProvider[] {
+  if (!rawValue?.trim()) {
+    return [...fallbackOrder];
+  }
 
-  if (providers.length === 0) return null;
+  const allowedSet = new Set<TProvider>(allowedProviders);
+  const configuredProviders = rawValue
+    .split(',')
+    .map((provider) => provider.trim().toLowerCase())
+    .filter((provider): provider is TProvider => allowedSet.has(provider as TProvider));
 
-  // Round-robin across all available providers
-  _providerRoundRobinCounter += 1;
-  return providers[_providerRoundRobinCounter % providers.length];
+  if (configuredProviders.length === 0) {
+    return [...fallbackOrder];
+  }
+
+  return Array.from(new Set(configuredProviders));
 }
 
-function getIdeaDraftProviderLabel(provider: 'groq' | 'huggingface' | 'gemini' | null): string {
+function hasIdeaDraftProviderConfigured(provider: IdeaDraftProvider): boolean {
+  if (provider === 'groq') {
+    return !!process.env.GROQ_API_KEY;
+  }
+
+  if (provider === 'huggingface') {
+    return !!process.env.HUGGINGFACE_API_KEY;
+  }
+
+  return !!process.env.GEMINI_DRAFT_API_KEY;
+}
+
+function hasStructuredGenerationProviderConfigured(provider: StructuredGenerationProvider): boolean {
+  return provider === 'groq' ? !!process.env.GROQ_API_KEY : !!process.env.HUGGINGFACE_API_KEY;
+}
+
+function getIdeaDraftProviderOrder(): IdeaDraftProvider[] {
+  return parseProviderOrder(
+    process.env.TUBEFLOW_IDEA_PROVIDER_ORDER,
+    DEFAULT_IDEA_DRAFT_PROVIDER_ORDER,
+    DEFAULT_IDEA_DRAFT_PROVIDER_ORDER
+  );
+}
+
+function getStructuredGenerationProviderOrder(): StructuredGenerationProvider[] {
+  return parseProviderOrder(
+    process.env.TUBEFLOW_STRUCTURED_PROVIDER_ORDER,
+    DEFAULT_STRUCTURED_PROVIDER_ORDER,
+    DEFAULT_STRUCTURED_PROVIDER_ORDER
+  );
+}
+
+function getAvailableIdeaDraftProvider(): IdeaDraftProvider | null {
+  return getIdeaDraftProviderOrder().find((provider) => hasIdeaDraftProviderConfigured(provider)) ?? null;
+}
+
+function getFallbackIdeaDraftProviders(primaryProvider: IdeaDraftProvider): IdeaDraftProvider[] {
+  return getIdeaDraftProviderOrder().filter((provider) => provider !== primaryProvider && hasIdeaDraftProviderConfigured(provider));
+}
+
+function getAvailableStructuredGenerationProvider(): StructuredGenerationProvider | null {
+  return getStructuredGenerationProviderOrder().find((provider) => hasStructuredGenerationProviderConfigured(provider)) ?? null;
+}
+
+function getFallbackStructuredGenerationProviders(primaryProvider: StructuredGenerationProvider): StructuredGenerationProvider[] {
+  return getStructuredGenerationProviderOrder().filter((provider) => provider !== primaryProvider && hasStructuredGenerationProviderConfigured(provider));
+}
+
+function getIdeaDraftProviderLabel(provider: IdeaDraftProvider | null): string {
   if (provider === 'groq') {
     return 'Groq (Llama 3.3)';
   }
@@ -1143,9 +1200,9 @@ export interface ScriptSEOResult {
 async function generateScriptSEO(
   idea: string,
   draft: string,
-  provider?: 'groq' | 'huggingface'
+  provider?: StructuredGenerationProvider
 ): Promise<ScriptSEOResult | null> {
-  const resolvedProvider = provider ?? getAvailableIdeaDraftProvider();
+  const resolvedProvider = provider ?? getAvailableStructuredGenerationProvider();
   if (!resolvedProvider) return null;
 
   const prompt = buildSEOPrompt(idea, draft);
@@ -1233,9 +1290,9 @@ export interface UrlPatternAnalysisResult {
 async function analyzeUrlAsPattern(
   title: string,
   transcript: string,
-  provider?: 'groq' | 'huggingface'
+  provider?: StructuredGenerationProvider
 ): Promise<UrlPatternAnalysisResult | null> {
-  const resolvedProvider = provider ?? getAvailableIdeaDraftProvider();
+  const resolvedProvider = provider ?? getAvailableStructuredGenerationProvider();
   if (!resolvedProvider) return null;
 
   const prompt = buildUrlPatternAnalysisPrompt(title, transcript);
@@ -3145,7 +3202,7 @@ async function startServer() {
 
       const trimmedApiKey = typeof apiKey === 'string' ? apiKey.trim() : '';
       const normalizedTargetMinutes = normalizeTargetMinutes(targetMinutes);
-      const provider = trimmedApiKey ? 'groq' : getAvailableIdeaDraftProvider();
+      const provider = trimmedApiKey ? 'groq' : getAvailableStructuredGenerationProvider();
       if (!provider) {
         return res.json({ script: buildFallbackPatternAppliedScript(patternScript, userScript, normalizedTargetMinutes), source: 'local-pattern-fallback' });
       }
@@ -3163,9 +3220,7 @@ async function startServer() {
       );
 
       if (!improvedScript) {
-        const fallback: 'groq' | 'huggingface' = provider === 'huggingface' ? 'groq' : 'huggingface';
-        const fallbackKeyPresent = fallback === 'groq' ? Boolean(trimmedApiKey || process.env.GROQ_API_KEY) : !!process.env.HUGGINGFACE_API_KEY;
-        if (fallbackKeyPresent) {
+        for (const fallback of getFallbackStructuredGenerationProviders(provider)) {
           improvedScript = await generatePatternAppliedScriptWithProvider(
             fallback,
             patternScript,
@@ -3174,6 +3229,9 @@ async function startServer() {
             fallback === 'groq' ? trimmedApiKey : undefined,
             fallback === 'groq' ? groqErrorCapture : hfErrorCapture
           );
+          if (improvedScript) {
+            break;
+          }
         }
       }
 
@@ -3246,9 +3304,9 @@ async function startServer() {
       return sendApiError(res, 400, 'invalid_input', 'Invalid YouTube URL.', 'That link does not look like a valid YouTube video URL. Please check it and try again.');
     }
 
-    const provider = getAvailableIdeaDraftProvider();
+    const provider = getAvailableStructuredGenerationProvider();
     if (!provider) {
-      return sendApiError(res, 503, 'missing_configuration', 'Missing AI API key.', 'The AI service is not configured yet. Add an API key, then try again.');
+      return sendApiError(res, 503, 'missing_configuration', 'Missing AI API key.', 'The AI service is not configured yet. Add a supported structured-output provider key, then try again.');
     }
 
     console.log(`Analyzing YouTube pattern for: ${videoId}`);
@@ -3339,13 +3397,7 @@ async function startServer() {
 
       // Fallback through remaining providers if primary failed
       if (!expandedIdea) {
-        const allProviders: Array<'groq' | 'huggingface' | 'gemini'> = ['groq', 'huggingface', 'gemini'];
-        for (const fallback of allProviders) {
-          if (fallback === provider) continue;
-          const keyPresent = fallback === 'groq' ? !!process.env.GROQ_API_KEY
-            : fallback === 'huggingface' ? !!process.env.HUGGINGFACE_API_KEY
-            : !!process.env.GEMINI_DRAFT_API_KEY;
-          if (!keyPresent) continue;
+        for (const fallback of getFallbackIdeaDraftProviders(provider)) {
           resultProvider = fallback;
           expandedIdea = await generateIdeaDraftWithProvider(fallback, idea, sections, getCapture(fallback), platform);
           if (expandedIdea) break;
@@ -3395,7 +3447,10 @@ async function startServer() {
       }
 
       // Generate SEO bundle (non-blocking — failure is silent)
-      const seo = await generateScriptSEO(idea, result.draft, resultProvider).catch(() => null);
+      const seoProvider: StructuredGenerationProvider | undefined = resultProvider === 'gemini'
+        ? undefined
+        : resultProvider;
+      const seo = await generateScriptSEO(idea, result.draft, seoProvider).catch(() => null);
 
       res.json({ ...result, seo: seo ?? null });
     } catch (error) {
